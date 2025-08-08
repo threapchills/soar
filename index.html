@@ -9,12 +9,13 @@
   html, body { height:100%; }
   body { margin:0; overflow:hidden; background:black; touch-action:none; }
   canvas { display:block; background:black; width:100vw; height:100vh; }
-  /* Mobile only UI (hidden on non-touch) */
-  .hud { position:fixed; inset:0; pointer-events:none; }
+
+  /* Mobile HUD (hidden on non-touch) */
+  .hud { position:fixed; inset:0; pointer-events:none; display:none; }
+  .touch .hud { display:block; }
   .stick {
     position: fixed;
-    width: 140px; height: 140px;
-    border-radius: 50%;
+    width: 140px; height: 140px; border-radius: 50%;
     background: radial-gradient(circle at 50% 50%, rgba(255,255,255,0.08), rgba(255,255,255,0.02));
     border: 1px solid rgba(255,255,255,0.2);
     pointer-events:auto; opacity: var(--ui-fade);
@@ -26,9 +27,6 @@
   }
   .left-stick { left: 20px; bottom: 24px; }
   .right-stick { right: 20px; bottom: 24px; }
-  /* Hide sticks by default; JS enables on touch devices */
-  .hud { display:none; }
-  .touch .hud { display:block; }
 </style>
 </head>
 <body>
@@ -39,23 +37,23 @@
 </div>
 
 <script>
-/* ===== Canvas & DPI ===== */
+/* ========= Canvas & DPI ========= */
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 function resizeCanvas(){
-  const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1)); // cap to 2x for perf
+  const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1)); // cap at 2x for perf
   const w = Math.floor(window.innerWidth);
   const h = Math.floor(window.innerHeight);
   canvas.style.width = w + 'px';
   canvas.style.height = h + 'px';
   canvas.width = Math.floor(w * dpr);
   canvas.height = Math.floor(h * dpr);
-  ctx.setTransform(dpr,0,0,dpr,0,0); // logical units = CSS pixels
+  ctx.setTransform(dpr,0,0,dpr,0,0); // use CSS pixels as logical units
 }
 resizeCanvas();
 window.addEventListener('resize', resizeCanvas);
 
-/* ===== Input (Desktop defaults) ===== */
+/* ========= Input (desktop) ========= */
 let keys = {};
 let mouse = { x: window.innerWidth/2, y: window.innerHeight/2, down: false };
 window.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true, {passive:false});
@@ -64,28 +62,25 @@ window.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.cli
 window.addEventListener('mousedown', () => mouse.down = true, {passive:false});
 window.addEventListener('mouseup', () => mouse.down = false, {passive:false});
 
-/* ===== Touch detection & dual sticks ===== */
+/* ========= Touch detection & dual sticks ========= */
 const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
 if (isTouch) document.documentElement.classList.add('touch');
 const hud = document.getElementById('hud');
 const stickL = document.getElementById('stickL'), padL = document.getElementById('padL');
 const stickR = document.getElementById('stickR'), padR = document.getElementById('padR');
 
-let leftStick = { active:false, cx:0, cy:0, dx:0, dy:0 };
-let rightStick = { active:false, cx:0, cy:0, dx:0, dy:0 };
+let leftStick = { active:false, dx:0, dy:0 };
+let rightStick = { active:false, dx:0, dy:0 };
 
 function stickBounds(el){ const r = el.getBoundingClientRect(); return {x:r.left + r.width/2, y:r.top + r.height/2, rad: r.width*0.5}; }
 function handleStickTouch(e){
   e.preventDefault();
   const touches = e.touches ? Array.from(e.touches) : [];
-  // reset
   leftStick.active = rightStick.active = false; leftStick.dx=leftStick.dy=rightStick.dx=rightStick.dy=0;
-  const lb = stickBounds(stickL), rb = stickBounds(stickR);
-  leftStick.cx = lb.x; leftStick.cy = lb.y;
-  rightStick.cx = rb.x; rightStick.cy = rb.y;
 
+  const lb = stickBounds(stickL), rb = stickBounds(stickR);
   touches.forEach(t=>{
-    const x = t.clientX, y = t.clientY;
+    const x=t.clientX, y=t.clientY;
     const dl = Math.hypot(x-lb.x, y-lb.y);
     const dr = Math.hypot(x-rb.x, y-rb.y);
     if (dl < lb.rad) {
@@ -102,10 +97,11 @@ function handleStickTouch(e){
       rightStick.dx = Math.cos(ang)*mag;
       rightStick.dy = Math.sin(ang)*mag;
       padR.style.transform = `translate(${(rightStick.dx*rb.rad*0.4)}px, ${(rightStick.dy*rb.rad*0.4)}px)`;
-      // Aim vector => synth mouse
+
+      // Aim vector => synthetic mouse
       mouse.x = player ? player.x + Math.cos(ang)*300 : x;
       mouse.y = player ? player.y + Math.sin(ang)*300 : y;
-      mouse.down = mag > 0.2; // hold to shoot with a small deadzone
+      mouse.down = mag > 0.2; // hold to shoot (deadzone)
     }
   });
 
@@ -124,10 +120,10 @@ if (isTouch) {
   });
 }
 
-/* ===== Asset loader ===== */
+/* ========= Assets ========= */
 function loadImage(src) { const img = new Image(); img.src = src; return img; }
 const bgLayers = [
-  loadImage('assets/bg0.png'),
+  loadImage('assets/bg0.png'), // static sky
   loadImage('assets/bg1.png'),
   loadImage('assets/bg2.png'),
   loadImage('assets/bg3.png')
@@ -147,7 +143,7 @@ const sfxShoot = new Audio('assets/shoot.wav');
 const sfxHit = new Audio('assets/hit.wav');
 const sfxPickup = new Audio('assets/pickup.wav');
 
-/* ===== Game State ===== */
+/* ========= Game State ========= */
 let started=false, gameOver=false, cameraShake=0;
 let player, projectiles, enemies, particles, collectables, effects, floatTexts, enemySpawnTimer;
 
@@ -155,17 +151,14 @@ const hueMap = { fire: 0, lightning: 220, ice: 180 };
 const weaponStats = {
   default:   { cooldown: 15, speed: 10, damage: 1 },
   fire:      { cooldown: 25, speed:  6, damage: 2 },
-  lightning: { cooldown: 30, speed:  0, damage: 2 },
+  lightning: { cooldown: 30, speed:  0, damage: 2 }, // hitscan
   ice:       { cooldown: 22, speed:  8, damage: 1 }
 };
 
-/* ===== Start / Music ===== */
+/* ========= Start / Music ========= */
 function startGame(){
-  if (!started) {
-    started=true; fadeInMusic(); resetGame();
-  } else if (gameOver) {
-    resetGame();
-  }
+  if (!started) { started=true; fadeInMusic(); resetGame(); }
+  else if (gameOver) { resetGame(); }
 }
 function fadeInMusic(){
   song.currentTime=0;
@@ -179,14 +172,15 @@ function fadeInMusic(){
 window.addEventListener('click', startGame, {passive:true});
 window.addEventListener('keydown', startGame, {passive:true});
 
-/* ===== Classes (unchanged gameplay) ===== */
+/* ========= Classes ========= */
 class Background{
   constructor(img,speed){ this.img=img; this.speed=speed; this.x=0; }
   update(dir){
-    if (this.speed===0) return;
-    this.x -= this.speed * (dir>=0?1:-1); // reverse cosmetically when moving left
-    if (this.x <= -window.innerWidth) this.x += window.innerWidth;
-    if (this.x >=  window.innerWidth) this.x -= window.innerWidth;
+    if (this.speed===0) return; // bg0 static
+    this.x -= this.speed * (dir>=0 ? 1 : -1); // reverse cosmetically when moving left
+    const w = window.innerWidth;
+    if (this.x <= -w) this.x += w;
+    if (this.x >=  w) this.x -= w;
   }
   draw(){
     const w = window.innerWidth, h = window.innerHeight;
@@ -222,14 +216,16 @@ class Player{
     this.vy = Math.max(-this.maxSpeed, Math.min(this.maxSpeed, this.vy));
     this.x += this.vx; this.y += this.vy;
 
-    // horizontal wrap; clamp vertical
-    const halfW = this.width/2, halfH = this.height/2;
+    // Horizontal wrap; vertical clamped
+    const halfW=this.width/2, halfH=this.height/2;
     if (this.x < -halfW) this.x = window.innerWidth + halfW;
     if (this.x > window.innerWidth + halfW) this.x = -halfW;
     this.y = Math.max(halfH, Math.min(window.innerHeight - halfH, this.y));
 
+    // bob
     this.bob += 0.05; this.y += Math.sin(this.bob)*0.3;
 
+    // shooting with cooldown
     if (mouse.down && this.cooldownTimer<=0){
       this.shoot();
       this.cooldownTimer = weaponStats[this.weapon].cooldown;
@@ -280,7 +276,10 @@ class Projectile{
 }
 
 class LightningEffect{
-  constructor(x,y,angle){ this.x=x; this.y=y; this.angle=angle; this.life=6; this.hitApplied=false; this.targets=findLightningTargets(this.x,this.y,this.angle); }
+  constructor(x,y,angle){
+    this.x=x; this.y=y; this.angle=angle; this.life=6; this.hitApplied=false;
+    this.targets=findLightningTargets(this.x,this.y,this.angle);
+  }
   update(){
     if (!this.hitApplied){
       this.targets.forEach((t,i)=>{
@@ -323,21 +322,33 @@ class Enemy{
   constructor(){
     this.sprite = enemiesSprites[Math.floor(Math.random()*enemiesSprites.length)];
     this.width=96; this.height=96;
+
+    // Spawn and baseline
     this.x = window.innerWidth + 50;
     this.y = Math.random()*(window.innerHeight - this.height);
-    this.baseSpeed = 2 + Math.random()*1.5;
+    this.baseY = this.y;
+
+    // Movement/HP
+    this.baseSpeed = 2 + Math.random()*1.5; // constant world speed
     this.hp = 3;
+
+    // Zig-zag variety
     this.waveOffset = Math.random()*Math.PI*2;
     this.waveSpeed  = 0.005 + Math.random()*0.02;
-    this.waveAmp    = 10   + Math.random()*110; // 10–120px amplitude variety
+    this.waveAmp    = 10 + Math.random()*110; // 10–120px amplitude
+
     this.slowTimer=0;
   }
   update(){
     const spd = this.slowTimer>0 ? this.baseSpeed*0.5 : this.baseSpeed;
     if (this.slowTimer>0) this.slowTimer--;
-    this.x -= spd; // constant world speed
-    this.y += Math.sin(perfNow()*this.waveSpeed + this.waveOffset); // sway; amplitude already baked in via speed scaling (visually subtle per-frame)
-    // keep on screen vertically
+    this.x -= spd;
+
+    // Proper amplitude sway around baseY
+    const t = perfNow();
+    this.y = this.baseY + Math.sin(t * this.waveSpeed + this.waveOffset) * this.waveAmp;
+
+    // Stay in vertical bounds
     this.y = Math.max(0, Math.min(window.innerHeight - this.height, this.y));
   }
   draw(){ ctx.drawImage(this.sprite, this.x, this.y, this.width, this.height); }
@@ -353,11 +364,17 @@ class Collectable{
   }
 }
 
-class FloatText{ constructor(x,y,text,color){ this.x=x; this.y=y; this.text=text; this.color=color; this.life=40; } update(){ this.y-=0.5; this.life--; } draw(){ ctx.fillStyle=this.color; ctx.font='16px sans-serif'; ctx.fillText(this.text,this.x,this.y); } }
+class FloatText{
+  constructor(x,y,text,color){ this.x=x; this.y=y; this.text=text; this.color=color; this.life=40; }
+  update(){ this.y -= 0.5; this.life--; }
+  draw(){ ctx.fillStyle=this.color; ctx.font='16px sans-serif'; ctx.fillText(this.text,this.x,this.y); }
+}
 
-/* ===== Particles ===== */
+/* ========= Particles ========= */
 let particles=[];
-function spawnExplosion(x,y){ for(let i=0;i<28;i++) particles.push(makeParticle(x,y,(Math.random()<0.6)?'255,120,0':'255,60,0',5)); }
+function spawnExplosion(x,y){
+  for(let i=0;i<28;i++) particles.push(makeParticle(x,y,(Math.random()<0.6)?'255,120,0':'255,60,0',5));
+}
 function spawnHitParticles(x,y,type='default'){
   let color='255,0,0', size=4;
   if (type==='fire'){ color='255,120,0'; size=5; }
@@ -380,7 +397,7 @@ function drawParticles(){
   ctx.restore();
 }
 
-/* ===== Helpers ===== */
+/* ========= Helpers ========= */
 function perfNow(){ return (performance || Date).now ? (performance.now()/1000) : (Date.now()/1000); }
 function findLightningTargets(px,py,angle){
   return enemies
@@ -399,7 +416,7 @@ function dropCollectable(x,y){
   }
 }
 
-/* ===== BG, Entities, Loop ===== */
+/* ========= Backgrounds ========= */
 const bgObjs = [
   new Background(bgLayers[0], 0),
   new Background(bgLayers[1], 0.2),
@@ -407,18 +424,25 @@ const bgObjs = [
   new Background(bgLayers[3], 1.0)
 ];
 
-let projectiles=[], enemies=[], collectables=[], effects=[], floatTexts=[];
-let enemySpawnTimer=0; let playerObjReady=false;
-
+/* ========= Core Loop ========= */
 function resetGame(){
   player = new Player();
-  projectiles.length=0; enemies.length=0; collectables.length=0; effects.length=0; floatTexts.length=0; particles.length=0;
-  enemySpawnTimer=0; cameraShake=0; gameOver=false;
+  projectiles = [];
+  enemies = [];
+  collectables = [];
+  effects = [];
+  floatTexts = [];
+  particles = [];
+  enemySpawnTimer = 0;
+  cameraShake = 0;
+  gameOver = false;
 }
 
 function update(){
-  const dir = player && player.vx < -0.1 ? -1 : 1; // parallax cosmetic reversal
+  // Parallax reversal is cosmetic only
+  const dir = player && player.vx < -0.1 ? -1 : 1;
   bgObjs.forEach(bg=>bg.update(dir));
+
   player.update();
 
   for (let i=projectiles.length-1;i>=0;i--){
@@ -431,11 +455,13 @@ function update(){
   for (let ei=enemies.length-1; ei>=0; ei--){
     const e=enemies[ei]; e.update();
     if (e.x + e.width < 0) { enemies.splice(ei,1); continue; }
-    // player collision
+
+    // Player collision
     if (player.x < e.x+e.width && player.x+player.width > e.x && player.y < e.y+e.height && player.y+player.height > e.y){
       player.takeDamage(); enemies.splice(ei,1); continue;
     }
-    // projectile hits
+
+    // Projectile hits
     for (let pi=projectiles.length-1; pi>=0; pi--){
       const p=projectiles[pi];
       if (p.x < e.x + e.width && p.x > e.x && p.y > e.y && p.y < e.y + e.height){
@@ -447,6 +473,7 @@ function update(){
         } else { spawnHitParticles(p.x,p.y,'default'); }
         projectiles.splice(pi,1);
         sfxHit.currentTime=0; sfxHit.play();
+
         if (e.hp<=0){
           spawnExplosion(e.x+e.width/2, e.y+e.height/2);
           dropCollectable(e.x,e.y);
@@ -458,7 +485,7 @@ function update(){
     }
   }
 
-  // collectables
+  // Collectables
   for (let ci=collectables.length-1; ci>=0; ci--){
     const c=collectables[ci]; c.update();
     if (player.x < c.x+c.size && player.x+player.width > c.x && player.y < c.y+c.size && player.y+player.height > c.y){
@@ -470,6 +497,7 @@ function update(){
   }
 
   if (enemySpawnTimer<=0){ enemies.push(new Enemy()); enemySpawnTimer=90; } else enemySpawnTimer--;
+
   if (cameraShake>0) cameraShake--;
 }
 
