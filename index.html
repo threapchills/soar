@@ -18,14 +18,12 @@ canvas.height = window.innerHeight;
 
 let keys = {};
 let mouse = { x: 0, y: 0, down: false };
-
 window.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
 window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
 window.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
 window.addEventListener('mousedown', () => mouse.down = true);
 window.addEventListener('mouseup', () => mouse.down = false);
 
-// Asset loader
 function loadImage(src) { const img = new Image(); img.src = src; return img; }
 const bgLayers = [
     loadImage('assets/bg0.png'),
@@ -40,26 +38,28 @@ const enemiesSprites = [
     loadImage('assets/enemy2.png'),
     loadImage('assets/enemy3.png')
 ];
+const orbSprite = loadImage('assets/orb.png'); // collectable image
 
-// Audio
 const song = new Audio('assets/song.ogg'); song.loop = true; song.volume = 0;
 const sfxShoot = new Audio('assets/shoot.wav');
 const sfxHit = new Audio('assets/hit.wav');
+const sfxPickup = new Audio('assets/pickup.wav');
 
-// Game state
-let started = false;
+let started = false, gameOver = false;
 let cameraShake = 0;
 
 function startGame() {
-    started = true;
-    fadeInMusic();
+    if (started && gameOver) { resetGame(); return; }
+    if (!started) {
+        started = true;
+        fadeInMusic();
+    }
     window.removeEventListener('click', startGame);
     window.removeEventListener('keydown', startGame);
 }
-
 function fadeInMusic() {
     song.currentTime = 0;
-    song.play().catch(err => console.log('Audio blocked', err));
+    song.play().catch(()=>{});
     let vol = 0;
     const fade = setInterval(() => {
         vol += 0.02;
@@ -67,17 +67,12 @@ function fadeInMusic() {
         if (song.volume >= 0.4) clearInterval(fade);
     }, 100);
 }
-
 window.addEventListener('click', startGame);
 window.addEventListener('keydown', startGame);
 
 class Background {
     constructor(img, speed) { this.img = img; this.speed = speed; this.x = 0; }
-    update() {
-        if (this.speed === 0) return;
-        this.x -= this.speed;
-        if (this.x <= -canvas.width) this.x = 0;
-    }
+    update() { if (this.speed===0) return; this.x -= this.speed; if (this.x <= -canvas.width) this.x = 0; }
     draw() {
         ctx.drawImage(this.img, this.x, 0, canvas.width, canvas.height);
         if (this.speed !== 0) ctx.drawImage(this.img, this.x + canvas.width, 0, canvas.width, canvas.height);
@@ -88,16 +83,15 @@ class Player {
     constructor() {
         this.x = canvas.width / 4;
         this.y = canvas.height / 2;
-        this.width = 64;
-        this.height = 32;
-        this.vx = 0; this.vy = 0;
-        this.accel = 0.4;
-        this.maxSpeed = 5;
-        this.bob = 0;
-        this.flip = false;
-        this.shootCooldown = 0;
+        this.width = 64; this.height = 32;
+        this.vx = 0; this.vy = 0; this.accel = 0.4; this.maxSpeed = 5;
+        this.bob = 0; this.flip = false;
+        this.shootCooldown = 0; this.baseCooldown = 15;
+        this.hp = 5; this.invuln = 0;
+        this.weapon = 'single';
     }
     update() {
+        if (this.invuln>0) this.invuln--;
         let tx = 0, ty = 0;
         if (keys['w']) ty -= this.accel;
         if (keys['s']) ty += this.accel;
@@ -107,40 +101,62 @@ class Player {
         this.vx *= 0.9; this.vy *= 0.9;
         this.vx = Math.max(-this.maxSpeed, Math.min(this.maxSpeed, this.vx));
         this.vy = Math.max(-this.maxSpeed, Math.min(this.maxSpeed, this.vy));
-
-        this.x += this.vx;
-        this.y += this.vy;
-
-        // Bobbing
-        this.bob += 0.05;
-        this.y += Math.sin(this.bob) * 0.3;
+        this.x += this.vx; this.y += this.vy;
+        this.bob += 0.05; this.y += Math.sin(this.bob) * 0.3;
 
         if (mouse.down && this.shootCooldown <= 0) {
             this.shoot();
-            this.shootCooldown = 12;
+            this.shootCooldown = this.baseCooldown;
         }
         if (this.shootCooldown > 0) this.shootCooldown--;
     }
     shoot() {
         const angle = Math.atan2(mouse.y - this.y, mouse.x - this.x);
-        projectiles.push(new Projectile(this.x + this.width/2, this.y, angle));
+        if (this.weapon === 'single') {
+            projectiles.push(new Projectile(this.x+this.width/2, this.y, angle));
+        }
+        if (this.weapon === 'triple') {
+            [-0.2,0,0.2].forEach(off => {
+                projectiles.push(new Projectile(this.x+this.width/2, this.y, angle+off));
+            });
+        }
+        if (this.weapon === 'rapid') {
+            let p = new Projectile(this.x+this.width/2, this.y, angle);
+            p.speed = 14;
+            projectiles.push(p);
+        }
         sfxShoot.currentTime = 0; sfxShoot.play();
+    }
+    takeDamage() {
+        if (this.invuln>0) return;
+        this.hp--; this.invuln = 30;
+        if (this.hp <= 0) {
+            gameOver = true;
+        }
     }
     draw() {
         ctx.save();
         ctx.translate(this.x, this.y);
         if (this.flip) { ctx.scale(-1, 1); ctx.translate(-this.width, 0); }
-        const img = (mouse.down && this.shootCooldown > 6) ? wizardShoot : wizardFly;
-        ctx.drawImage(img, 0, -this.height/2, this.width, this.height);
+        if (this.invuln % 6 < 3) {
+            const img = (mouse.down && this.shootCooldown > this.baseCooldown/2) ? wizardShoot : wizardFly;
+            ctx.drawImage(img, 0, -this.height/2, this.width, this.height);
+        }
         ctx.restore();
+        // draw HP
+        ctx.fillStyle = 'red';
+        ctx.fillRect(20,20, this.hp*30, 10);
+        ctx.strokeStyle='white';
+        ctx.strokeRect(20,20, 5*30, 10);
     }
 }
 
 class Projectile {
     constructor(x, y, angle) {
         this.x = x; this.y = y;
-        this.vx = Math.cos(angle) * 10;
-        this.vy = Math.sin(angle) * 10;
+        this.speed = 10;
+        this.vx = Math.cos(angle) * this.speed;
+        this.vy = Math.sin(angle) * this.speed;
         this.size = 6; this.life = 60;
         this.trail = [];
     }
@@ -174,9 +190,24 @@ class Enemy {
         this.y = Math.random() * (canvas.height - this.height);
         this.speed = 2 + Math.random()*1.5;
         this.hp = 3;
+        this.waveOffset = Math.random()*Math.PI*2;
+        this.waveSpeed = 0.02 + Math.random()*0.03;
+        this.waveAmp = 30 + Math.random()*20;
     }
-    update() { this.x -= this.speed; }
+    update() {
+        this.x -= this.speed;
+        this.y += Math.sin(Date.now()*this.waveSpeed + this.waveOffset) * 0.5;
+    }
     draw() { ctx.drawImage(this.sprite, this.x, this.y, this.width, this.height); }
+}
+
+class Collectable {
+    constructor(x,y) {
+        this.x = x; this.y = y; this.size = 24;
+        this.type = ['triple','rapid'][Math.floor(Math.random()*2)];
+    }
+    update() { this.x -= 2; }
+    draw() { ctx.drawImage(orbSprite, this.x, this.y, this.size, this.size); }
 }
 
 class Particle {
@@ -184,21 +215,23 @@ class Particle {
         this.x = x; this.y = y;
         this.vx = (Math.random()-0.5)*4;
         this.vy = (Math.random()-0.5)*4;
-        this.life = 30;
-        this.color = color;
+        this.life = 30; this.color = color;
     }
     update() { this.x += this.vx; this.y += this.vy; this.life--; }
-    draw() {
-        ctx.fillStyle = `rgba(${this.color},${this.life/30})`;
-        ctx.fillRect(this.x, this.y, 2, 2);
-    }
+    draw() { ctx.fillStyle = `rgba(${this.color},${this.life/30})`; ctx.fillRect(this.x, this.y, 2, 2); }
 }
 
-let player = new Player();
-let projectiles = [];
-let enemies = [];
-let particles = [];
-let enemySpawnTimer = 0;
+let player, projectiles, enemies, particles, collectables, enemySpawnTimer;
+function resetGame() {
+    player = new Player();
+    projectiles = [];
+    enemies = [];
+    particles = [];
+    collectables = [];
+    enemySpawnTimer = 0;
+    gameOver = false;
+}
+resetGame();
 
 const bgObjs = [
     new Background(bgLayers[0], 0),
@@ -210,34 +243,44 @@ const bgObjs = [
 function update() {
     bgObjs.forEach(bg => bg.update());
     player.update();
-    projectiles.forEach((p,i) => { p.update(); if (p.life<=0) projectiles.splice(i,1); });
+    projectiles.forEach((p,i)=>{ p.update(); if (p.life<=0) projectiles.splice(i,1); });
     enemies.forEach((e,ei) => {
         e.update();
         if (e.x + e.width < 0) enemies.splice(ei,1);
+        // collisions with player
+        if (player.x < e.x+e.width && player.x+player.width > e.x && player.y < e.y+e.height && player.y+player.height > e.y) {
+            player.takeDamage();
+            enemies.splice(ei,1);
+        }
+        // projectiles hitting enemy
         projectiles.forEach((p,pi) => {
             if (p.x < e.x + e.width && p.x > e.x && p.y > e.y && p.y < e.y + e.height) {
                 e.hp--; projectiles.splice(pi,1);
                 sfxHit.currentTime = 0; sfxHit.play();
                 if (e.hp <= 0) {
                     spawnExplosion(e.x+e.width/2, e.y+e.height/2);
+                    if (Math.random()<0.4) collectables.push(new Collectable(e.x, e.y));
                     enemies.splice(ei,1);
                     cameraShake = 10;
                 }
             }
         });
     });
-    if (enemySpawnTimer <= 0) { enemies.push(new Enemy()); enemySpawnTimer = 100; }
-    else enemySpawnTimer--;
-
-    particles.forEach((pa,pi) => { pa.update(); if (pa.life<=0) particles.splice(pi,1); });
-    if (cameraShake > 0) cameraShake--;
+    collectables.forEach((c,ci) => {
+        c.update();
+        if (player.x < c.x+c.size && player.x+player.width > c.x && player.y < c.y+c.size && player.y+player.height > c.y) {
+            player.weapon = c.type;
+            sfxPickup.currentTime = 0; sfxPickup.play();
+            for (let i=0;i<10;i++) particles.push(new Particle(c.x,c.y,'0,255,255'));
+            collectables.splice(ci,1);
+        }
+    });
+    particles.forEach((pa,pi)=>{ pa.update(); if (pa.life<=0) particles.splice(pi,1); });
+    if (enemySpawnTimer <= 0) { enemies.push(new Enemy()); enemySpawnTimer = 90; } else enemySpawnTimer--;
+    if (cameraShake>0) cameraShake--;
 }
 
-function spawnExplosion(x,y) {
-    for (let i=0;i<20;i++) {
-        particles.push(new Particle(x,y,'255,150,0'));
-    }
-}
+function spawnExplosion(x,y) { for (let i=0;i<20;i++) particles.push(new Particle(x,y,'255,150,0')); }
 
 function draw() {
     let shakeX = (cameraShake ? Math.random()*cameraShake - cameraShake/2 : 0);
@@ -247,25 +290,23 @@ function draw() {
     ctx.clearRect(0,0,canvas.width,canvas.height);
     bgObjs.forEach(bg => bg.draw());
     player.draw();
-    projectiles.forEach(p => p.draw());
-    enemies.forEach(e => e.draw());
-    particles.forEach(pa => pa.draw());
+    projectiles.forEach(p=>p.draw());
+    enemies.forEach(e=>e.draw());
+    collectables.forEach(c=>c.draw());
+    particles.forEach(pa=>pa.draw());
     ctx.restore();
 }
 
 function drawStartScreen() {
-    ctx.fillStyle = 'black';
-    ctx.fillRect(0,0,canvas.width,canvas.height);
-    ctx.fillStyle = 'white';
-    ctx.font = '48px sans-serif';
-    ctx.textAlign = 'center';
+    ctx.fillStyle = 'black'; ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle = 'white'; ctx.font = '48px sans-serif'; ctx.textAlign = 'center';
     ctx.fillText('Wizard Carpet Quest', canvas.width/2, canvas.height/2 - 40);
     ctx.font = '24px sans-serif';
-    ctx.fillText('Press Any Key or Click to Start', canvas.width/2, canvas.height/2 + 20);
+    ctx.fillText(gameOver ? 'Game Over - Click or Press Any Key to Restart' : 'Press Any Key or Click to Start', canvas.width/2, canvas.height/2 + 20);
 }
 
 function loop() {
-    if (!started) {
+    if (!started || gameOver) {
         drawStartScreen();
     } else {
         update();
@@ -276,8 +317,7 @@ function loop() {
 loop();
 
 window.addEventListener('resize', () => {
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
+    canvas.width = window.innerWidth; canvas.height = window.innerHeight;
 });
 </script>
 </body>
