@@ -16,7 +16,7 @@ const ctx = canvas.getContext('2d');
 canvas.width = window.innerWidth;
 canvas.height = window.innerHeight;
 
-// --- INPUT ---
+// -------- INPUT --------
 let keys = {};
 let mouse = { x: 0, y: 0, down: false };
 window.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
@@ -25,20 +25,20 @@ window.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.cli
 window.addEventListener('mousedown', () => mouse.down = true);
 window.addEventListener('mouseup', () => mouse.down = false);
 
-// --- LOAD ASSETS ---
+// -------- ASSETS --------
 function loadImage(src) { const img = new Image(); img.src = src; return img; }
 const bgLayers = [
-    loadImage('assets/bg0.png'),
-    loadImage('assets/bg1.png'),
-    loadImage('assets/bg2.png'),
-    loadImage('assets/bg3.png')
+  loadImage('assets/bg0.png'), // static sky
+  loadImage('assets/bg1.png'),
+  loadImage('assets/bg2.png'),
+  loadImage('assets/bg3.png')
 ];
 const wizardFly = loadImage('assets/wizard_fly.png');
 const wizardShoot = loadImage('assets/wizard_shoot.png');
 const enemiesSprites = [
-    loadImage('assets/enemy1.png'),
-    loadImage('assets/enemy2.png'),
-    loadImage('assets/enemy3.png')
+  loadImage('assets/enemy1.png'),
+  loadImage('assets/enemy2.png'),
+  loadImage('assets/enemy3.png')
 ];
 const orbSprite = loadImage('assets/orb.png');
 const heartSprite = loadImage('assets/heart.png');
@@ -48,339 +48,439 @@ const sfxShoot = new Audio('assets/shoot.wav');
 const sfxHit = new Audio('assets/hit.wav');
 const sfxPickup = new Audio('assets/pickup.wav');
 
-// --- GAME STATE ---
+// -------- STATE --------
 let started = false, gameOver = false;
 let cameraShake = 0;
 let player, projectiles, enemies, particles, collectables, effects, floatTexts, enemySpawnTimer;
 
 const hueMap = { fire: 0, lightning: 220, ice: 180 };
 const weaponStats = {
-    default:   { cooldown: 15, speed: 10, damage: 1 },
-    fire:      { cooldown: 25, speed: 6,  damage: 2 },
-    lightning: { cooldown: 30, speed: 0,  damage: 2 },
-    ice:       { cooldown: 22, speed: 8,  damage: 1 }
+  default:   { cooldown: 15, speed: 10, damage: 1 },
+  fire:      { cooldown: 25, speed:  6, damage: 2 },
+  lightning: { cooldown: 30, speed:  0, damage: 2 },
+  ice:       { cooldown: 22, speed:  8, damage: 1 }
 };
 
-// --- GAME FLOW ---
+// -------- FLOW --------
 function startGame() {
-    if (!started) {
-        started = true;
-        fadeInMusic();
-        resetGame();
-    } else if (gameOver) {
-        resetGame();
-    }
+  if (!started) {
+    started = true; fadeInMusic(); resetGame();
+  } else if (gameOver) {
+    resetGame();
+  }
 }
 function fadeInMusic() {
-    song.currentTime = 0;
-    song.play().catch(()=>{});
-    let vol = 0;
-    const fade = setInterval(() => {
-        vol += 0.02;
-        song.volume = Math.min(vol, 0.4);
-        if (song.volume >= 0.4) clearInterval(fade);
-    }, 100);
+  song.currentTime = 0;
+  song.play().catch(()=>{});
+  let vol = 0;
+  const fade = setInterval(() => {
+    vol += 0.02; song.volume = Math.min(vol, 0.4);
+    if (song.volume >= 0.4) clearInterval(fade);
+  }, 100);
 }
 window.addEventListener('click', startGame);
 window.addEventListener('keydown', startGame);
 
 function resetGame() {
-    player = new Player();
-    projectiles = [];
-    enemies = [];
-    particles = [];
-    collectables = [];
-    effects = [];
-    floatTexts = [];
-    enemySpawnTimer = 0;
-    gameOver = false;
+  player = new Player();
+  projectiles = [];
+  enemies = [];
+  particles = [];
+  collectables = [];
+  effects = [];
+  floatTexts = [];
+  enemySpawnTimer = 0;
+  cameraShake = 0;
+  gameOver = false;
 }
 
-// --- CLASSES ---
+// -------- CLASSES --------
 class Background {
-    constructor(img, speed) { this.img = img; this.speed = speed; this.x = 0; }
-    update(dir) {
-        if (this.speed===0) return;
-        this.x -= this.speed * dir;
-        if (this.x <= -canvas.width) this.x = 0;
-        if (this.x >= canvas.width) this.x = 0;
+  constructor(img, speed) { this.img = img; this.speed = speed; this.x = 0; }
+  update(dir) {
+    if (this.speed === 0) return; // bg0 stays static
+    this.x -= this.speed * dir;
+    if (this.x <= -canvas.width) this.x += canvas.width;
+    if (this.x >= canvas.width)  this.x -= canvas.width;
+  }
+  draw() {
+    ctx.drawImage(this.img, this.x, 0, canvas.width, canvas.height);
+    if (this.speed !== 0) {
+      ctx.drawImage(this.img, this.x + canvas.width, 0, canvas.width, canvas.height);
+      ctx.drawImage(this.img, this.x - canvas.width, 0, canvas.width, canvas.height);
     }
-    draw() {
-        ctx.drawImage(this.img, this.x, 0, canvas.width, canvas.height);
-        if (this.speed !== 0) {
-            ctx.drawImage(this.img, this.x + canvas.width, 0, canvas.width, canvas.height);
-            ctx.drawImage(this.img, this.x - canvas.width, 0, canvas.width, canvas.height);
-        }
-    }
+  }
 }
 
 class Player {
-    constructor() {
-        this.x = canvas.width / 4;
-        this.y = canvas.height / 2;
-        this.width = 64; this.height = 32;
-        this.vx = 0; this.vy = 0; this.accel = 0.4; this.maxSpeed = 5;
-        this.bob = 0; this.flip = false;
-        this.hp = 5; this.invuln = 0;
-        this.weapon = 'default';
-        this.cooldownTimer = 0;
-    }
-    update() {
-        if (this.invuln>0) this.invuln--;
-        let tx = 0, ty = 0;
-        if (keys['w']) ty -= this.accel;
-        if (keys['s']) ty += this.accel;
-        if (keys['a']) { tx -= this.accel; this.flip = true; }
-        if (keys['d']) { tx += this.accel; this.flip = false; }
-        this.vx += tx; this.vy += ty;
-        this.vx *= 0.9; this.vy *= 0.9;
-        this.vx = Math.max(-this.maxSpeed, Math.min(this.maxSpeed, this.vx));
-        this.vy = Math.max(-this.maxSpeed, Math.min(this.maxSpeed, this.vy));
-        this.x += this.vx; this.y += this.vy;
-        this.bob += 0.05; this.y += Math.sin(this.bob) * 0.3;
+  constructor() {
+    this.x = canvas.width / 4;
+    this.y = canvas.height / 2;
+    this.width = 64; this.height = 32;
+    this.vx = 0; this.vy = 0;
+    this.accel = 0.4; this.maxSpeed = 5;
+    this.bob = 0; this.flip = false;
+    this.hp = 5; this.invuln = 0;
+    this.weapon = 'default';
+    this.cooldownTimer = 0;
+  }
+  update() {
+    if (this.invuln>0) this.invuln--;
+    let tx = 0, ty = 0;
+    if (keys['w']) ty -= this.accel;
+    if (keys['s']) ty += this.accel;
+    if (keys['a']) { tx -= this.accel; this.flip = true; }
+    if (keys['d']) { tx += this.accel; this.flip = false; }
+    this.vx += tx; this.vy += ty;
+    this.vx *= 0.9; this.vy *= 0.9;
+    this.vx = Math.max(-this.maxSpeed, Math.min(this.maxSpeed, this.vx));
+    this.vy = Math.max(-this.maxSpeed, Math.min(this.maxSpeed, this.vy));
 
-        // Shooting control
-        if (mouse.down && this.cooldownTimer <= 0) {
-            this.shoot();
-            this.cooldownTimer = weaponStats[this.weapon].cooldown;
-        }
-        if (this.cooldownTimer > 0) this.cooldownTimer--;
+    this.x += this.vx; this.y += this.vy;
+
+    // Horizontal wrap-around (keep vertical clamped)
+    const halfW = this.width/2, halfH = this.height/2, ground = 0; // using canvas bottom as ground baseline
+    if (this.x < -halfW) this.x = canvas.width + halfW;
+    if (this.x > canvas.width + halfW) this.x = -halfW;
+    // clamp vertical (no wrap)
+    this.y = Math.max(halfH, Math.min(canvas.height - halfH, this.y));
+
+    // bob
+    this.bob += 0.05; this.y += Math.sin(this.bob) * 0.3;
+
+    // shooting
+    if (mouse.down && this.cooldownTimer <= 0) {
+      this.shoot();
+      this.cooldownTimer = weaponStats[this.weapon].cooldown;
     }
-    shoot() {
-        sfxShoot.currentTime = 0; sfxShoot.play();
-        const angle = Math.atan2(mouse.y - this.y, mouse.x - this.x);
-        if (this.weapon === 'default' || this.weapon === 'ice' || this.weapon === 'fire') {
-            projectiles.push(new Projectile(this.x+this.width/2, this.y, angle, this.weapon));
-        }
-        if (this.weapon === 'lightning') {
-            effects.push(new LightningEffect(this.x+this.width/2, this.y, angle));
-        }
+    if (this.cooldownTimer > 0) this.cooldownTimer--;
+  }
+  shoot() {
+    sfxShoot.currentTime = 0; sfxShoot.play();
+    const angle = Math.atan2(mouse.y - this.y, mouse.x - this.x);
+    if (this.weapon === 'default' || this.weapon === 'ice' || this.weapon === 'fire') {
+      projectiles.push(new Projectile(this.x+this.width/2, this.y, angle, this.weapon));
+    } else if (this.weapon === 'lightning') {
+      effects.push(new LightningEffect(this.x+this.width/2, this.y, angle));
     }
-    takeDamage() {
-        if (this.invuln>0) return;
-        this.hp--; this.invuln = 30;
-        if (this.hp <= 0) gameOver = true;
+  }
+  takeDamage() {
+    if (this.invuln>0) return;
+    this.hp--; this.invuln = 30;
+    if (this.hp <= 0) gameOver = true;
+  }
+  draw() {
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    if (this.flip) { ctx.scale(-1, 1); ctx.translate(-this.width, 0); }
+    if (this.invuln % 6 < 3) {
+      const img = (mouse.down && this.cooldownTimer > weaponStats[this.weapon].cooldown/2) ? wizardShoot : wizardFly;
+      ctx.drawImage(img, 0, -this.height/2, this.width, this.height);
     }
-    draw() {
-        ctx.save();
-        ctx.translate(this.x, this.y);
-        if (this.flip) { ctx.scale(-1, 1); ctx.translate(-this.width, 0); }
-        if (this.invuln % 6 < 3) {
-            const img = (mouse.down && this.cooldownTimer > weaponStats[this.weapon].cooldown/2) ? wizardShoot : wizardFly;
-            ctx.drawImage(img, 0, -this.height/2, this.width, this.height);
-        }
-        ctx.restore();
-        // HP Bar
-        ctx.fillStyle = 'red';
-        ctx.fillRect(20,20, this.hp*30, 10);
-        ctx.strokeStyle='white';
-        ctx.strokeRect(20,20, 5*30, 10);
-    }
+    ctx.restore();
+    // HP UI
+    ctx.fillStyle = 'red';
+    ctx.fillRect(20,20, this.hp*30, 10);
+    ctx.strokeStyle='white';
+    ctx.strokeRect(20,20, 5*30, 10);
+  }
 }
 
 class Projectile {
-    constructor(x, y, angle, type) {
-        this.x = x; this.y = y;
-        this.type = type;
-        this.speed = weaponStats[type].speed;
-        this.vx = Math.cos(angle) * this.speed;
-        this.vy = Math.sin(angle) * this.speed;
-        this.size = 6; this.life = 60;
-    }
-    update() { this.x += this.vx; this.y += this.vy; this.life--; }
-    draw() {
-        let col = (this.type==='fire')?'255,100,0':(this.type==='ice')?'150,200,255':'255,255,150';
-        ctx.fillStyle = `rgb(${col})`;
-        ctx.beginPath(); ctx.arc(this.x, this.y, this.size, 0, Math.PI*2); ctx.fill();
-    }
+  constructor(x, y, angle, type) {
+    this.x = x; this.y = y;
+    this.type = type;
+    this.speed = weaponStats[type].speed;
+    this.vx = Math.cos(angle) * this.speed;
+    this.vy = Math.sin(angle) * this.speed;
+    this.size = 6; this.life = 60;
+  }
+  update() { this.x += this.vx; this.y += this.vy; this.life--; }
+  draw() {
+    let col = (this.type==='fire')?'255,120,0':(this.type==='ice')?'150,200,255':'255,255,150';
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = `rgba(${col},0.15)`;
+    ctx.beginPath(); ctx.arc(this.x, this.y, this.size*2.4, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = `rgba(${col},1)`;
+    ctx.beginPath(); ctx.arc(this.x, this.y, this.size, 0, Math.PI*2); ctx.fill();
+    ctx.restore();
+  }
 }
 
 class LightningEffect {
-    constructor(x,y,angle) {
-        this.x=x; this.y=y; this.angle=angle; this.life=5;
-        this.targets = findLightningTargets(this.x,this.y,this.angle);
-        this.hitApplied=false;
-    }
-    update() {
-        if (!this.hitApplied) {
-            this.targets.forEach((t,i)=>{
-                t.hp -= (i===0?2:1);
-                if (i===0 && t.hp<=0) { spawnExplosion(t.x+t.width/2,t.y+t.height/2); dropCollectable(t.x,t.y); }
-                if (i>0 && t.hp<=0) enemies.splice(enemies.indexOf(t),1);
-            });
-            this.hitApplied=true;
+  constructor(x,y,angle) {
+    this.x=x; this.y=y; this.angle=angle; this.life=6;
+    this.targets = findLightningTargets(this.x,this.y,this.angle);
+    this.hitApplied=false;
+  }
+  update() {
+    if (!this.hitApplied) {
+      this.targets.forEach((t,i)=>{
+        if (!t) return;
+        const dmg = i===0 ? 2 : 1;
+        t.hp -= dmg;
+        spawnHitParticles(t.x+t.width/2, t.y+t.height/2, 'lightning'); // blue pop
+        if (t.hp <= 0) {
+          spawnExplosion(t.x+t.width/2, t.y+t.height/2);
+          dropCollectable(t.x, t.y);
+          enemies.splice(enemies.indexOf(t),1);
+          cameraShake = 10;
         }
-        this.life--;
+      });
+      sfxHit.currentTime=0; sfxHit.play();
+      this.hitApplied=true;
     }
-    draw() {
-        ctx.strokeStyle='cyan';
-        ctx.lineWidth=2;
-        ctx.beginPath();
-        ctx.moveTo(this.x,this.y);
-        this.targets.forEach(t=>{
-            ctx.lineTo(t.x+t.width/2,t.y+t.height/2);
-        });
-        ctx.stroke();
-    }
+    this.life--;
+  }
+  draw() {
+    if (this.targets.length === 0) return;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle='rgba(120,200,255,0.9)';
+    ctx.lineWidth=2;
+    ctx.beginPath();
+    ctx.moveTo(this.x, this.y);
+    this.targets.forEach(t=>{
+      if (!t) return;
+      const tx = t.x + t.width/2, ty = t.y + t.height/2;
+      // jagged line
+      const segments = 6;
+      let lastX = this.x, lastY = this.y;
+      for (let i=1;i<=segments;i++){
+        const p = i/segments;
+        const ix = this.x + (tx - this.x)*p + (Math.random()-0.5)*8;
+        const iy = this.y + (ty - this.y)*p + (Math.random()-0.5)*8;
+        ctx.lineTo(ix, iy);
+        lastX = ix; lastY = iy;
+      }
+    });
+    ctx.stroke();
+    ctx.restore();
+  }
 }
 
 class Enemy {
-    constructor() {
-        this.sprite = enemiesSprites[Math.floor(Math.random()*enemiesSprites.length)];
-        this.width = 96; this.height = 96;
-        this.x = canvas.width + 50;
-        this.y = Math.random() * (canvas.height - this.height);
-        this.speed = 2 + Math.random()*1.5;
-        this.hp = 3;
-        this.waveOffset = Math.random()*Math.PI*2;
-        this.waveSpeed = 0.02 + Math.random()*0.03;
-        this.waveAmp = 20 + Math.random()*40;
-        this.slowTimer = 0;
-    }
-    update() {
-        let spd = this.slowTimer>0 ? this.speed*0.5 : this.speed;
-        if (this.slowTimer>0) this.slowTimer--;
-        this.x -= spd;
-        this.y += Math.sin(Date.now()*this.waveSpeed + this.waveOffset) * (this.waveAmp/60);
-    }
-    draw() { ctx.drawImage(this.sprite, this.x, this.y, this.width, this.height); }
+  constructor() {
+    this.sprite = enemiesSprites[Math.floor(Math.random()*enemiesSprites.length)];
+    this.width = 96; this.height = 96;
+    this.x = canvas.width + 50;
+    this.y = Math.random() * (canvas.height - this.height);
+    this.baseSpeed = 2 + Math.random()*1.5; // constant base world speed (not tied to parallax)
+    this.hp = 3;
+    this.waveOffset = Math.random()*Math.PI*2;
+    this.waveSpeed = 0.005 + Math.random()*0.02;  // slower -> readable sway differences
+    this.waveAmp = 10 + Math.random()*120;        // 10px to 120px amplitude => real variety
+    this.slowTimer = 0;
+  }
+  update() {
+    const effectiveSpeed = this.slowTimer>0 ? this.baseSpeed*0.5 : this.baseSpeed;
+    if (this.slowTimer>0) this.slowTimer--;
+    this.x -= effectiveSpeed; // constant regardless of player direction
+    // true amplitude sway
+    this.y += Math.sin(perfNow()*this.waveSpeed + this.waveOffset);
+    // keep within vertical bounds loosely
+    this.y = Math.max(0, Math.min(canvas.height - this.height, this.y));
+  }
+  draw() { ctx.drawImage(this.sprite, this.x, this.y, this.width, this.height); }
 }
 
 class Collectable {
-    constructor(x,y,type) {
-        this.x = x; this.y = y; this.type = type; this.size = 24;
-        this.floatOffset = Math.random()*Math.PI*2;
+  constructor(x,y,type) {
+    this.x = x; this.y = y; this.type = type; this.size = 24;
+    this.floatOffset = Math.random()*Math.PI*2;
+  }
+  update() { this.x -= 2; this.floatOffset += 0.05; }
+  draw() {
+    let dy = Math.sin(this.floatOffset)*4;
+    if (this.type==='heart') ctx.drawImage(heartSprite, this.x, this.y+dy, this.size, this.size);
+    else {
+      ctx.save();
+      ctx.filter = `hue-rotate(${hueMap[this.type]}deg)`;
+      ctx.drawImage(orbSprite, this.x, this.y+dy, this.size, this.size);
+      ctx.restore();
     }
-    update() { this.x -= 2; this.floatOffset += 0.05; }
-    draw() {
-        let dy = Math.sin(this.floatOffset)*4;
-        if (this.type==='heart') ctx.drawImage(heartSprite, this.x, this.y+dy, this.size, this.size);
-        else {
-            ctx.save();
-            ctx.filter = `hue-rotate(${hueMap[this.type]}deg)`;
-            ctx.drawImage(orbSprite, this.x, this.y+dy, this.size, this.size);
-            ctx.restore();
-        }
-    }
+  }
 }
 
+class FloatText {
+  constructor(x,y,text,color) { this.x=x; this.y=y; this.text=text; this.color=color; this.life=40; }
+  update(){ this.y -= 0.5; this.life--; }
+  draw(){ ctx.fillStyle=this.color; ctx.font='16px sans-serif'; ctx.fillText(this.text,this.x,this.y); }
+}
+
+// -------- PARTICLES --------
+function spawnExplosion(x,y) {
+  for (let i=0;i<28;i++) particles.push(makeParticle(x,y,(Math.random()<0.6)?'255,120,0':'255,60,0', 4));
+}
+function spawnHitParticles(x,y,type='default') {
+  let color = '255,0,0';   // default: red (as requested)
+  let size = 4;
+  if (type==='fire') { color = '255,120,0'; size = 5; }
+  if (type==='ice')  { color = '160,220,255'; size = 3; }
+  if (type==='lightning') { color = '120,200,255'; size = 3; }
+  const count = 32;
+  for (let i=0;i<count;i++) particles.push(makeParticle(x,y,color,size));
+}
+function makeParticle(x,y,color,size) {
+  return {
+    x, y,
+    vx: (Math.random()-0.5)*6,
+    vy: (Math.random()-0.5)*6,
+    life: 24 + Math.random()*12,
+    size,
+    color
+  };
+}
+function drawParticles() {
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  particles.forEach((p,pi)=>{
+    p.x += p.vx; p.y += p.vy; p.life--;
+    const a = Math.max(0, p.life/36);
+    ctx.fillStyle = `rgba(${p.color},${a})`;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI*2); ctx.fill();
+    if (p.life<=0) particles.splice(pi,1);
+  });
+  ctx.restore();
+}
+
+// -------- HELPERS --------
+function perfNow(){ return (performance || Date).now ? (performance.now()/1000) : (Date.now()/1000); }
+
 function findLightningTargets(px,py,angle) {
-    let sorted = enemies.map(e=>({e,dist:Math.hypot(e.x-px,e.y-py)})).sort((a,b)=>a.dist-b.dist);
-    return sorted.slice(0,2).map(s=>s.e);
+  // pick nearest two enemies to the player within a reasonable radius
+  const candidates = enemies
+    .map(e => ({ e, d: Math.hypot(e.x - px, e.y - py) }))
+    .filter(o => o.d < 500)
+    .sort((a,b)=>a.d-b.d)
+    .slice(0,2)
+    .map(o=>o.e);
+  return candidates;
 }
 
 function dropCollectable(x,y) {
-    let roll = Math.random();
-    if (roll<0.2) collectables.push(new Collectable(x,y,'heart'));
-    else if (roll<0.6) {
-        let types=['fire','lightning','ice'];
-        collectables.push(new Collectable(x,y, types[Math.floor(Math.random()*types.length)]));
-    }
+  const roll = Math.random();
+  if (roll<0.2) collectables.push(new Collectable(x,y,'heart'));
+  else if (roll<0.6) {
+    const types=['fire','lightning','ice'];
+    collectables.push(new Collectable(x,y, types[Math.floor(Math.random()*types.length)]));
+  }
 }
 
-function spawnExplosion(x,y) { for (let i=0;i<20;i++) particles.push({x,y,vx:(Math.random()-0.5)*4,vy:(Math.random()-0.5)*4,life:30,color:'255,150,0'}); }
-
-// --- BACKGROUNDS ---
+// -------- BACKGROUNDS --------
 const bgObjs = [
-    new Background(bgLayers[0], 0),
-    new Background(bgLayers[1], 0.2),
-    new Background(bgLayers[2], 0.5),
-    new Background(bgLayers[3], 1)
+  new Background(bgLayers[0], 0),
+  new Background(bgLayers[1], 0.2),
+  new Background(bgLayers[2], 0.5),
+  new Background(bgLayers[3], 1.0)
 ];
 
-// --- LOOP ---
+// -------- UPDATE/DRAW --------
 function update() {
-    let dir = player.vx>0 ? 1 : player.vx<0 ? -1 : 1;
-    bgObjs.forEach(bg => bg.update(dir));
+  // parallax direction purely from player intent; enemies unaffected
+  const dir = player && player.vx < -0.1 ? -1 : 1;
+  bgObjs.forEach(bg => bg.update(dir));
 
-    player.update();
+  player.update();
 
-    projectiles.forEach((p,i)=>{ p.update(); if (p.life<=0) projectiles.splice(i,1); });
+  // projectiles & collisions
+  projectiles.forEach((p,pi)=>{
+    p.update();
+    if (p.life<=0) projectiles.splice(pi,1);
+  });
 
-    effects.forEach((ef,i)=>{ ef.update(); if (ef.life<=0) effects.splice(i,1); });
+  // effects (lightning)
+  effects.forEach((ef,ei)=>{ ef.update(); if (ef.life<=0) effects.splice(ei,1); });
 
-    enemies.forEach((e,ei)=>{
-        e.update();
-        if (e.x + e.width < 0) enemies.splice(ei,1);
-        if (player.x < e.x+e.width && player.x+player.width > e.x && player.y < e.y+e.height && player.y+player.height > e.y) {
-            player.takeDamage(); enemies.splice(ei,1);
+  enemies.forEach((e,ei)=>{
+    e.update();
+    if (e.x + e.width < 0) enemies.splice(ei,1);
+
+    // player collision
+    if (player.x < e.x+e.width && player.x+player.width > e.x && player.y < e.y+e.height && player.y+player.height > e.y) {
+      player.takeDamage(); enemies.splice(ei,1);
+    }
+
+    // projectile hits
+    projectiles.forEach((p,pi)=>{
+      if (p.x < e.x + e.width && p.x > e.x && p.y > e.y && p.y < e.y + e.height) {
+        e.hp -= weaponStats[p.type].damage;
+        if (p.type==='ice') { e.slowTimer = 60; spawnHitParticles(p.x,p.y,'ice'); }
+        else if (p.type==='fire') {
+          spawnHitParticles(p.x,p.y,'fire');
+          // splash
+          enemies.forEach(o=>{
+            if (o!==e && Math.hypot(o.x - e.x, o.y - e.y) < 60) o.hp--;
+          });
+        } else {
+          spawnHitParticles(p.x,p.y,'default');
         }
-        projectiles.forEach((p,pi)=>{
-            if (p.x < e.x + e.width && p.x > e.x && p.y > e.y && p.y < e.y + e.height) {
-                e.hp -= weaponStats[p.type].damage;
-                if (p.type==='ice') e.slowTimer=60;
-                if (p.type==='fire') { // AoE splash
-                    enemies.forEach(o=>{
-                        if (Math.hypot(o.x-e.x,o.y-e.y)<50) o.hp--;
-                    });
-                }
-                projectiles.splice(pi,1);
-                sfxHit.currentTime=0; sfxHit.play();
-                if (e.hp <= 0) {
-                    spawnExplosion(e.x+e.width/2, e.y+e.height/2);
-                    dropCollectable(e.x,e.y);
-                    enemies.splice(ei,1);
-                    cameraShake=10;
-                }
-            }
-        });
-    });
+        projectiles.splice(pi,1);
+        sfxHit.currentTime=0; sfxHit.play();
 
-    collectables.forEach((c,ci)=>{
-        c.update();
-        if (player.x < c.x+c.size && player.x+player.width > c.x && player.y < c.y+c.size && player.y+player.height > c.y) {
-            if (c.type==='heart') { if (player.hp<5) player.hp++; }
-            else player.weapon = c.type;
-            sfxPickup.currentTime=0; sfxPickup.play();
-            collectables.splice(ci,1);
+        if (e.hp <= 0) {
+          spawnExplosion(e.x+e.width/2, e.y+e.height/2);
+          dropCollectable(e.x, e.y);
+          enemies.splice(ei,1);
+          cameraShake = 10;
         }
+      }
     });
+  });
 
-    particles.forEach((pa,pi)=>{ pa.x+=pa.vx; pa.y+=pa.vy; pa.life--; if (pa.life<=0) particles.splice(pi,1); });
+  // collectables
+  collectables.forEach((c,ci)=>{
+    c.update();
+    if (player.x < c.x+c.size && player.x+player.width > c.x && player.y < c.y+c.size && player.y+player.height > c.y) {
+      if (c.type==='heart') { if (player.hp<5) player.hp++; }
+      else { player.weapon = c.type; }
+      sfxPickup.currentTime=0; sfxPickup.play();
+      collectables.splice(ci,1);
+    }
+  });
 
-    if (enemySpawnTimer <= 0) { enemies.push(new Enemy()); enemySpawnTimer = 90; } else enemySpawnTimer--;
-    if (cameraShake>0) cameraShake--;
+  // spawns
+  if (enemySpawnTimer <= 0) { enemies.push(new Enemy()); enemySpawnTimer = 90; } else enemySpawnTimer--;
+
+  if (cameraShake>0) cameraShake--;
 }
 
 function draw() {
-    let shakeX = (cameraShake ? Math.random()*cameraShake - cameraShake/2 : 0);
-    let shakeY = (cameraShake ? Math.random()*cameraShake - cameraShake/2 : 0);
-    ctx.save(); ctx.translate(shakeX, shakeY);
-    ctx.clearRect(0,0,canvas.width,canvas.height);
-    bgObjs.forEach(bg => bg.draw());
-    player.draw();
-    projectiles.forEach(p=>p.draw());
-    effects.forEach(e=>e.draw());
-    enemies.forEach(e=>e.draw());
-    collectables.forEach(c=>c.draw());
-    particles.forEach(pa=>{
-        ctx.fillStyle=`rgba(${pa.color},${pa.life/30})`;
-        ctx.fillRect(pa.x, pa.y, 2, 2);
-    });
-    ctx.restore();
+  const shakeX = cameraShake ? Math.random()*cameraShake - cameraShake/2 : 0;
+  const shakeY = cameraShake ? Math.random()*cameraShake - cameraShake/2 : 0;
+  ctx.save(); ctx.translate(shakeX, shakeY);
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  bgObjs.forEach(bg => bg.draw());
+  player.draw();
+  projectiles.forEach(p=>p.draw());
+  effects.forEach(e=>e.draw());
+  enemies.forEach(e=>e.draw());
+  collectables.forEach(c=>c.draw());
+  drawParticles();
+  floatTexts.forEach((ft,fi)=>{ ft.update(); if (ft.life<=0) floatTexts.splice(fi,1); else ft.draw(); });
+  ctx.restore();
 }
 
 function drawStartScreen() {
-    ctx.fillStyle = 'black'; ctx.fillRect(0,0,canvas.width,canvas.height);
-    ctx.fillStyle = 'white'; ctx.font = '48px sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText('Wizard Carpet Quest', canvas.width/2, canvas.height/2 - 40);
-    ctx.font = '24px sans-serif';
-    ctx.fillText(gameOver ? 'Game Over - Click or Press Any Key to Restart' : 'Press Any Key or Click to Start', canvas.width/2, canvas.height/2 + 20);
+  ctx.fillStyle = 'black'; ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle = 'white'; ctx.font = '48px sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText('Wizard Carpet Quest', canvas.width/2, canvas.height/2 - 40);
+  ctx.font = '24px sans-serif';
+  ctx.fillText(gameOver ? 'Game Over - Click or Press Any Key to Restart' : 'Press Any Key or Click to Start', canvas.width/2, canvas.height/2 + 20);
 }
 
+// -------- LOOP --------
 function loop() {
-    if (!started || gameOver) {
-        drawStartScreen();
-    } else {
-        update();
-        draw();
-    }
-    requestAnimationFrame(loop);
+  if (!started || gameOver) drawStartScreen();
+  else { update(); draw(); }
+  requestAnimationFrame(loop);
 }
+resetGame(); // ensure objects exist before first loop
 loop();
 
 window.addEventListener('resize', () => {
-    canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+  canvas.width = window.innerWidth; canvas.height = window.innerHeight;
 });
 </script>
 </body>
