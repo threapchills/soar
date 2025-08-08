@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <title>Wizard Carpet Quest</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
-<link rel="icon" href="data:,">
+<link rel="icon" type="image/png" href="assets/wizard_shoot.png">
 <style>
   :root { --ui-fade: 0.35 }
   html, body { height:100%; }
@@ -172,6 +172,7 @@ function fadeInMusic(){
 }
 window.addEventListener('click', startGame, {passive:true});
 window.addEventListener('keydown', startGame, {passive:true});
+window.addEventListener('touchstart', startGame, {passive:true});
 
 /* ========= Classes ========= */
 class Background{
