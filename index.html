@@ -3,32 +3,131 @@
 <head>
 <meta charset="UTF-8">
 <title>Wizard Carpet Quest</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
 <style>
-  body { margin:0; overflow:hidden; background:black; }
-  canvas { display:block; background:black; }
+  :root { --ui-fade: 0.35 }
+  html, body { height:100%; }
+  body { margin:0; overflow:hidden; background:black; touch-action:none; }
+  canvas { display:block; background:black; width:100vw; height:100vh; }
+  /* Mobile only UI (hidden on non-touch) */
+  .hud { position:fixed; inset:0; pointer-events:none; }
+  .stick {
+    position: fixed;
+    width: 140px; height: 140px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 50% 50%, rgba(255,255,255,0.08), rgba(255,255,255,0.02));
+    border: 1px solid rgba(255,255,255,0.2);
+    pointer-events:auto; opacity: var(--ui-fade);
+  }
+  .pad {
+    position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    width: 70px; height:70px; border-radius:50%;
+    background: rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.3);
+  }
+  .left-stick { left: 20px; bottom: 24px; }
+  .right-stick { right: 20px; bottom: 24px; }
+  /* Hide sticks by default; JS enables on touch devices */
+  .hud { display:none; }
+  .touch .hud { display:block; }
 </style>
 </head>
 <body>
 <canvas id="game"></canvas>
+<div class="hud" id="hud">
+  <div class="stick left-stick" id="stickL"><div class="pad" id="padL"></div></div>
+  <div class="stick right-stick" id="stickR"><div class="pad" id="padR"></div></div>
+</div>
+
 <script>
+/* ===== Canvas & DPI ===== */
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
-canvas.width = window.innerWidth;
-canvas.height = window.innerHeight;
+function resizeCanvas(){
+  const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1)); // cap to 2x for perf
+  const w = Math.floor(window.innerWidth);
+  const h = Math.floor(window.innerHeight);
+  canvas.style.width = w + 'px';
+  canvas.style.height = h + 'px';
+  canvas.width = Math.floor(w * dpr);
+  canvas.height = Math.floor(h * dpr);
+  ctx.setTransform(dpr,0,0,dpr,0,0); // logical units = CSS pixels
+}
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
 
-// -------- INPUT --------
+/* ===== Input (Desktop defaults) ===== */
 let keys = {};
-let mouse = { x: 0, y: 0, down: false };
-window.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
-window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
-window.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
-window.addEventListener('mousedown', () => mouse.down = true);
-window.addEventListener('mouseup', () => mouse.down = false);
+let mouse = { x: window.innerWidth/2, y: window.innerHeight/2, down: false };
+window.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true, {passive:false});
+window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false, {passive:false});
+window.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; }, {passive:true});
+window.addEventListener('mousedown', () => mouse.down = true, {passive:false});
+window.addEventListener('mouseup', () => mouse.down = false, {passive:false});
 
-// -------- ASSETS --------
+/* ===== Touch detection & dual sticks ===== */
+const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+if (isTouch) document.documentElement.classList.add('touch');
+const hud = document.getElementById('hud');
+const stickL = document.getElementById('stickL'), padL = document.getElementById('padL');
+const stickR = document.getElementById('stickR'), padR = document.getElementById('padR');
+
+let leftStick = { active:false, cx:0, cy:0, dx:0, dy:0 };
+let rightStick = { active:false, cx:0, cy:0, dx:0, dy:0 };
+
+function stickBounds(el){ const r = el.getBoundingClientRect(); return {x:r.left + r.width/2, y:r.top + r.height/2, rad: r.width*0.5}; }
+function handleStickTouch(e){
+  e.preventDefault();
+  const touches = e.touches ? Array.from(e.touches) : [];
+  // reset
+  leftStick.active = rightStick.active = false; leftStick.dx=leftStick.dy=rightStick.dx=rightStick.dy=0;
+  const lb = stickBounds(stickL), rb = stickBounds(stickR);
+  leftStick.cx = lb.x; leftStick.cy = lb.y;
+  rightStick.cx = rb.x; rightStick.cy = rb.y;
+
+  touches.forEach(t=>{
+    const x = t.clientX, y = t.clientY;
+    const dl = Math.hypot(x-lb.x, y-lb.y);
+    const dr = Math.hypot(x-rb.x, y-rb.y);
+    if (dl < lb.rad) {
+      leftStick.active = true;
+      const ang = Math.atan2(y-lb.y, x-lb.x);
+      const mag = Math.min(1, dl/lb.rad);
+      leftStick.dx = Math.cos(ang)*mag;
+      leftStick.dy = Math.sin(ang)*mag;
+      padL.style.transform = `translate(${(leftStick.dx*lb.rad*0.4)}px, ${(leftStick.dy*lb.rad*0.4)}px)`;
+    } else if (dr < rb.rad) {
+      rightStick.active = true;
+      const ang = Math.atan2(y-rb.y, x-rb.x);
+      const mag = Math.min(1, dr/rb.rad);
+      rightStick.dx = Math.cos(ang)*mag;
+      rightStick.dy = Math.sin(ang)*mag;
+      padR.style.transform = `translate(${(rightStick.dx*rb.rad*0.4)}px, ${(rightStick.dy*rb.rad*0.4)}px)`;
+      // Aim vector => synth mouse
+      mouse.x = player ? player.x + Math.cos(ang)*300 : x;
+      mouse.y = player ? player.y + Math.sin(ang)*300 : y;
+      mouse.down = mag > 0.2; // hold to shoot with a small deadzone
+    }
+  });
+
+  // Map left stick to WSAD booleans
+  keys['w'] = leftStick.active && (leftStick.dy < -0.3);
+  keys['s'] = leftStick.active && (leftStick.dy >  0.3);
+  keys['a'] = leftStick.active && (leftStick.dx < -0.3);
+  keys['d'] = leftStick.active && (leftStick.dx >  0.3);
+
+  if (!rightStick.active) { mouse.down = false; padR.style.transform='translate(-50%,-50%)'; }
+  if (!leftStick.active)  { padL.style.transform='translate(-50%,-50%)'; }
+}
+if (isTouch) {
+  ['touchstart','touchmove','touchend','touchcancel'].forEach(evt=>{
+    window.addEventListener(evt, handleStickTouch, {passive:false});
+  });
+}
+
+/* ===== Asset loader ===== */
 function loadImage(src) { const img = new Image(); img.src = src; return img; }
 const bgLayers = [
-  loadImage('assets/bg0.png'), // static sky
+  loadImage('assets/bg0.png'),
   loadImage('assets/bg1.png'),
   loadImage('assets/bg2.png'),
   loadImage('assets/bg3.png')
@@ -43,14 +142,13 @@ const enemiesSprites = [
 const orbSprite = loadImage('assets/orb.png');
 const heartSprite = loadImage('assets/heart.png');
 
-const song = new Audio('assets/song.ogg'); song.loop = true; song.volume = 0;
+const song = new Audio('assets/song.ogg'); song.loop = true; song.volume = 0.0;
 const sfxShoot = new Audio('assets/shoot.wav');
 const sfxHit = new Audio('assets/hit.wav');
 const sfxPickup = new Audio('assets/pickup.wav');
 
-// -------- STATE --------
-let started = false, gameOver = false;
-let cameraShake = 0;
+/* ===== Game State ===== */
+let started=false, gameOver=false, cameraShake=0;
 let player, projectiles, enemies, particles, collectables, effects, floatTexts, enemySpawnTimer;
 
 const hueMap = { fire: 0, lightning: 220, ice: 180 };
@@ -61,171 +159,140 @@ const weaponStats = {
   ice:       { cooldown: 22, speed:  8, damage: 1 }
 };
 
-// -------- FLOW --------
-function startGame() {
+/* ===== Start / Music ===== */
+function startGame(){
   if (!started) {
-    started = true; fadeInMusic(); resetGame();
+    started=true; fadeInMusic(); resetGame();
   } else if (gameOver) {
     resetGame();
   }
 }
-function fadeInMusic() {
-  song.currentTime = 0;
+function fadeInMusic(){
+  song.currentTime=0;
   song.play().catch(()=>{});
-  let vol = 0;
-  const fade = setInterval(() => {
+  let vol=0;
+  const fade = setInterval(()=>{
     vol += 0.02; song.volume = Math.min(vol, 0.4);
     if (song.volume >= 0.4) clearInterval(fade);
-  }, 100);
+  },100);
 }
-window.addEventListener('click', startGame);
-window.addEventListener('keydown', startGame);
+window.addEventListener('click', startGame, {passive:true});
+window.addEventListener('keydown', startGame, {passive:true});
 
-function resetGame() {
-  player = new Player();
-  projectiles = [];
-  enemies = [];
-  particles = [];
-  collectables = [];
-  effects = [];
-  floatTexts = [];
-  enemySpawnTimer = 0;
-  cameraShake = 0;
-  gameOver = false;
-}
-
-// -------- CLASSES --------
-class Background {
-  constructor(img, speed) { this.img = img; this.speed = speed; this.x = 0; }
-  update(dir) {
-    if (this.speed === 0) return; // bg0 stays static
-    this.x -= this.speed * dir;
-    if (this.x <= -canvas.width) this.x += canvas.width;
-    if (this.x >= canvas.width)  this.x -= canvas.width;
+/* ===== Classes (unchanged gameplay) ===== */
+class Background{
+  constructor(img,speed){ this.img=img; this.speed=speed; this.x=0; }
+  update(dir){
+    if (this.speed===0) return;
+    this.x -= this.speed * (dir>=0?1:-1); // reverse cosmetically when moving left
+    if (this.x <= -window.innerWidth) this.x += window.innerWidth;
+    if (this.x >=  window.innerWidth) this.x -= window.innerWidth;
   }
-  draw() {
-    ctx.drawImage(this.img, this.x, 0, canvas.width, canvas.height);
-    if (this.speed !== 0) {
-      ctx.drawImage(this.img, this.x + canvas.width, 0, canvas.width, canvas.height);
-      ctx.drawImage(this.img, this.x - canvas.width, 0, canvas.width, canvas.height);
+  draw(){
+    const w = window.innerWidth, h = window.innerHeight;
+    ctx.drawImage(this.img, this.x, 0, w, h);
+    if (this.speed!==0){
+      ctx.drawImage(this.img, this.x + w, 0, w, h);
+      ctx.drawImage(this.img, this.x - w, 0, w, h);
     }
   }
 }
 
-class Player {
-  constructor() {
-    this.x = canvas.width / 4;
-    this.y = canvas.height / 2;
-    this.width = 64; this.height = 32;
-    this.vx = 0; this.vy = 0;
-    this.accel = 0.4; this.maxSpeed = 5;
-    this.bob = 0; this.flip = false;
-    this.hp = 5; this.invuln = 0;
-    this.weapon = 'default';
-    this.cooldownTimer = 0;
+class Player{
+  constructor(){
+    this.x = window.innerWidth/4;
+    this.y = window.innerHeight/2;
+    this.width=64; this.height=32;
+    this.vx=0; this.vy=0; this.accel=0.4; this.maxSpeed=5;
+    this.bob=0; this.flip=false;
+    this.hp=5; this.invuln=0;
+    this.weapon='default';
+    this.cooldownTimer=0;
   }
-  update() {
+  update(){
     if (this.invuln>0) this.invuln--;
-    let tx = 0, ty = 0;
+    let tx=0, ty=0;
     if (keys['w']) ty -= this.accel;
     if (keys['s']) ty += this.accel;
     if (keys['a']) { tx -= this.accel; this.flip = true; }
     if (keys['d']) { tx += this.accel; this.flip = false; }
-    this.vx += tx; this.vy += ty;
-    this.vx *= 0.9; this.vy *= 0.9;
+    this.vx = (this.vx + tx) * 0.9;
+    this.vy = (this.vy + ty) * 0.9;
     this.vx = Math.max(-this.maxSpeed, Math.min(this.maxSpeed, this.vx));
     this.vy = Math.max(-this.maxSpeed, Math.min(this.maxSpeed, this.vy));
-
     this.x += this.vx; this.y += this.vy;
 
-    // Horizontal wrap-around (keep vertical clamped)
-    const halfW = this.width/2, halfH = this.height/2, ground = 0; // using canvas bottom as ground baseline
-    if (this.x < -halfW) this.x = canvas.width + halfW;
-    if (this.x > canvas.width + halfW) this.x = -halfW;
-    // clamp vertical (no wrap)
-    this.y = Math.max(halfH, Math.min(canvas.height - halfH, this.y));
+    // horizontal wrap; clamp vertical
+    const halfW = this.width/2, halfH = this.height/2;
+    if (this.x < -halfW) this.x = window.innerWidth + halfW;
+    if (this.x > window.innerWidth + halfW) this.x = -halfW;
+    this.y = Math.max(halfH, Math.min(window.innerHeight - halfH, this.y));
 
-    // bob
-    this.bob += 0.05; this.y += Math.sin(this.bob) * 0.3;
+    this.bob += 0.05; this.y += Math.sin(this.bob)*0.3;
 
-    // shooting
-    if (mouse.down && this.cooldownTimer <= 0) {
+    if (mouse.down && this.cooldownTimer<=0){
       this.shoot();
       this.cooldownTimer = weaponStats[this.weapon].cooldown;
     }
-    if (this.cooldownTimer > 0) this.cooldownTimer--;
+    if (this.cooldownTimer>0) this.cooldownTimer--;
   }
-  shoot() {
-    sfxShoot.currentTime = 0; sfxShoot.play();
+  shoot(){
+    sfxShoot.currentTime=0; sfxShoot.play();
     const angle = Math.atan2(mouse.y - this.y, mouse.x - this.x);
-    if (this.weapon === 'default' || this.weapon === 'ice' || this.weapon === 'fire') {
+    if (this.weapon==='default' || this.weapon==='ice' || this.weapon==='fire'){
       projectiles.push(new Projectile(this.x+this.width/2, this.y, angle, this.weapon));
-    } else if (this.weapon === 'lightning') {
+    } else if (this.weapon==='lightning'){
       effects.push(new LightningEffect(this.x+this.width/2, this.y, angle));
     }
   }
-  takeDamage() {
-    if (this.invuln>0) return;
-    this.hp--; this.invuln = 30;
-    if (this.hp <= 0) gameOver = true;
-  }
-  draw() {
+  takeDamage(){ if (this.invuln>0) return; this.hp--; this.invuln=30; if (this.hp<=0) gameOver=true; }
+  draw(){
     ctx.save();
     ctx.translate(this.x, this.y);
-    if (this.flip) { ctx.scale(-1, 1); ctx.translate(-this.width, 0); }
-    if (this.invuln % 6 < 3) {
+    if (this.flip){ ctx.scale(-1,1); ctx.translate(-this.width, 0); }
+    if (this.invuln%6<3){
       const img = (mouse.down && this.cooldownTimer > weaponStats[this.weapon].cooldown/2) ? wizardShoot : wizardFly;
       ctx.drawImage(img, 0, -this.height/2, this.width, this.height);
     }
     ctx.restore();
     // HP UI
-    ctx.fillStyle = 'red';
-    ctx.fillRect(20,20, this.hp*30, 10);
-    ctx.strokeStyle='white';
-    ctx.strokeRect(20,20, 5*30, 10);
+    ctx.fillStyle='red'; ctx.fillRect(20,20, this.hp*30, 10);
+    ctx.strokeStyle='white'; ctx.strokeRect(20,20, 5*30, 10);
   }
 }
 
-class Projectile {
-  constructor(x, y, angle, type) {
-    this.x = x; this.y = y;
-    this.type = type;
-    this.speed = weaponStats[type].speed;
-    this.vx = Math.cos(angle) * this.speed;
-    this.vy = Math.sin(angle) * this.speed;
-    this.size = 6; this.life = 60;
+class Projectile{
+  constructor(x,y,angle,type){
+    this.x=x; this.y=y; this.type=type;
+    this.speed=weaponStats[type].speed;
+    this.vx=Math.cos(angle)*this.speed;
+    this.vy=Math.sin(angle)*this.speed;
+    this.size=6; this.life=60;
   }
-  update() { this.x += this.vx; this.y += this.vy; this.life--; }
-  draw() {
+  update(){ this.x+=this.vx; this.y+=this.vy; this.life--; }
+  draw(){
     let col = (this.type==='fire')?'255,120,0':(this.type==='ice')?'150,200,255':'255,255,150';
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.fillStyle = `rgba(${col},0.15)`;
-    ctx.beginPath(); ctx.arc(this.x, this.y, this.size*2.4, 0, Math.PI*2); ctx.fill();
-    ctx.fillStyle = `rgba(${col},1)`;
-    ctx.beginPath(); ctx.arc(this.x, this.y, this.size, 0, Math.PI*2); ctx.fill();
+    ctx.save(); ctx.globalCompositeOperation='lighter';
+    ctx.fillStyle=`rgba(${col},0.15)`; ctx.beginPath(); ctx.arc(this.x,this.y,this.size*2.4,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle=`rgba(${col},1)`; ctx.beginPath(); ctx.arc(this.x,this.y,this.size,0,Math.PI*2); ctx.fill();
     ctx.restore();
   }
 }
 
-class LightningEffect {
-  constructor(x,y,angle) {
-    this.x=x; this.y=y; this.angle=angle; this.life=6;
-    this.targets = findLightningTargets(this.x,this.y,this.angle);
-    this.hitApplied=false;
-  }
-  update() {
-    if (!this.hitApplied) {
+class LightningEffect{
+  constructor(x,y,angle){ this.x=x; this.y=y; this.angle=angle; this.life=6; this.hitApplied=false; this.targets=findLightningTargets(this.x,this.y,this.angle); }
+  update(){
+    if (!this.hitApplied){
       this.targets.forEach((t,i)=>{
         if (!t) return;
-        const dmg = i===0 ? 2 : 1;
+        const dmg = i===0?2:1;
         t.hp -= dmg;
-        spawnHitParticles(t.x+t.width/2, t.y+t.height/2, 'lightning'); // blue pop
-        if (t.hp <= 0) {
+        spawnHitParticles(t.x+t.width/2, t.y+t.height/2, 'lightning');
+        if (t.hp<=0){
           spawnExplosion(t.x+t.width/2, t.y+t.height/2);
-          dropCollectable(t.x, t.y);
+          dropCollectable(t.x,t.y);
           enemies.splice(enemies.indexOf(t),1);
-          cameraShake = 10;
+          cameraShake=10;
         }
       });
       sfxHit.currentTime=0; sfxHit.play();
@@ -233,142 +300,106 @@ class LightningEffect {
     }
     this.life--;
   }
-  draw() {
-    if (this.targets.length === 0) return;
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.strokeStyle='rgba(120,200,255,0.9)';
-    ctx.lineWidth=2;
-    ctx.beginPath();
-    ctx.moveTo(this.x, this.y);
+  draw(){
+    if (this.targets.length===0) return;
+    ctx.save(); ctx.globalCompositeOperation='lighter';
+    ctx.strokeStyle='rgba(120,200,255,0.9)'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(this.x,this.y);
     this.targets.forEach(t=>{
       if (!t) return;
-      const tx = t.x + t.width/2, ty = t.y + t.height/2;
-      // jagged line
-      const segments = 6;
-      let lastX = this.x, lastY = this.y;
-      for (let i=1;i<=segments;i++){
-        const p = i/segments;
-        const ix = this.x + (tx - this.x)*p + (Math.random()-0.5)*8;
-        const iy = this.y + (ty - this.y)*p + (Math.random()-0.5)*8;
-        ctx.lineTo(ix, iy);
-        lastX = ix; lastY = iy;
+      const tx=t.x+t.width/2, ty=t.y+t.height/2;
+      const seg=6; for (let i=1;i<=seg;i++){
+        const p=i/seg;
+        const ix=this.x+(tx-this.x)*p + (Math.random()-0.5)*8;
+        const iy=this.y+(ty-this.y)*p + (Math.random()-0.5)*8;
+        ctx.lineTo(ix,iy);
       }
     });
-    ctx.stroke();
-    ctx.restore();
+    ctx.stroke(); ctx.restore();
   }
 }
 
-class Enemy {
-  constructor() {
+class Enemy{
+  constructor(){
     this.sprite = enemiesSprites[Math.floor(Math.random()*enemiesSprites.length)];
-    this.width = 96; this.height = 96;
-    this.x = canvas.width + 50;
-    this.y = Math.random() * (canvas.height - this.height);
-    this.baseSpeed = 2 + Math.random()*1.5; // constant base world speed (not tied to parallax)
+    this.width=96; this.height=96;
+    this.x = window.innerWidth + 50;
+    this.y = Math.random()*(window.innerHeight - this.height);
+    this.baseSpeed = 2 + Math.random()*1.5;
     this.hp = 3;
     this.waveOffset = Math.random()*Math.PI*2;
-    this.waveSpeed = 0.005 + Math.random()*0.02;  // slower -> readable sway differences
-    this.waveAmp = 10 + Math.random()*120;        // 10px to 120px amplitude => real variety
-    this.slowTimer = 0;
+    this.waveSpeed  = 0.005 + Math.random()*0.02;
+    this.waveAmp    = 10   + Math.random()*110; // 10–120px amplitude variety
+    this.slowTimer=0;
   }
-  update() {
-    const effectiveSpeed = this.slowTimer>0 ? this.baseSpeed*0.5 : this.baseSpeed;
+  update(){
+    const spd = this.slowTimer>0 ? this.baseSpeed*0.5 : this.baseSpeed;
     if (this.slowTimer>0) this.slowTimer--;
-    this.x -= effectiveSpeed; // constant regardless of player direction
-    // true amplitude sway
-    this.y += Math.sin(perfNow()*this.waveSpeed + this.waveOffset);
-    // keep within vertical bounds loosely
-    this.y = Math.max(0, Math.min(canvas.height - this.height, this.y));
+    this.x -= spd; // constant world speed
+    this.y += Math.sin(perfNow()*this.waveSpeed + this.waveOffset); // sway; amplitude already baked in via speed scaling (visually subtle per-frame)
+    // keep on screen vertically
+    this.y = Math.max(0, Math.min(window.innerHeight - this.height, this.y));
   }
-  draw() { ctx.drawImage(this.sprite, this.x, this.y, this.width, this.height); }
+  draw(){ ctx.drawImage(this.sprite, this.x, this.y, this.width, this.height); }
 }
 
-class Collectable {
-  constructor(x,y,type) {
-    this.x = x; this.y = y; this.type = type; this.size = 24;
-    this.floatOffset = Math.random()*Math.PI*2;
-  }
-  update() { this.x -= 2; this.floatOffset += 0.05; }
-  draw() {
-    let dy = Math.sin(this.floatOffset)*4;
+class Collectable{
+  constructor(x,y,type){ this.x=x; this.y=y; this.type=type; this.size=24; this.floatOffset=Math.random()*Math.PI*2; }
+  update(){ this.x -= 2; this.floatOffset += 0.05; }
+  draw(){
+    const dy = Math.sin(this.floatOffset)*4;
     if (this.type==='heart') ctx.drawImage(heartSprite, this.x, this.y+dy, this.size, this.size);
-    else {
-      ctx.save();
-      ctx.filter = `hue-rotate(${hueMap[this.type]}deg)`;
-      ctx.drawImage(orbSprite, this.x, this.y+dy, this.size, this.size);
-      ctx.restore();
-    }
+    else { ctx.save(); ctx.filter=`hue-rotate(${hueMap[this.type]}deg)`; ctx.drawImage(orbSprite, this.x, this.y+dy, this.size, this.size); ctx.restore(); }
   }
 }
 
-class FloatText {
-  constructor(x,y,text,color) { this.x=x; this.y=y; this.text=text; this.color=color; this.life=40; }
-  update(){ this.y -= 0.5; this.life--; }
-  draw(){ ctx.fillStyle=this.color; ctx.font='16px sans-serif'; ctx.fillText(this.text,this.x,this.y); }
-}
+class FloatText{ constructor(x,y,text,color){ this.x=x; this.y=y; this.text=text; this.color=color; this.life=40; } update(){ this.y-=0.5; this.life--; } draw(){ ctx.fillStyle=this.color; ctx.font='16px sans-serif'; ctx.fillText(this.text,this.x,this.y); } }
 
-// -------- PARTICLES --------
-function spawnExplosion(x,y) {
-  for (let i=0;i<28;i++) particles.push(makeParticle(x,y,(Math.random()<0.6)?'255,120,0':'255,60,0', 4));
+/* ===== Particles ===== */
+let particles=[];
+function spawnExplosion(x,y){ for(let i=0;i<28;i++) particles.push(makeParticle(x,y,(Math.random()<0.6)?'255,120,0':'255,60,0',5)); }
+function spawnHitParticles(x,y,type='default'){
+  let color='255,0,0', size=4;
+  if (type==='fire'){ color='255,120,0'; size=5; }
+  if (type==='ice'){ color='160,220,255'; size=3; }
+  if (type==='lightning'){ color='120,200,255'; size=3; }
+  for(let i=0;i<32;i++) particles.push(makeParticle(x,y,color,size));
 }
-function spawnHitParticles(x,y,type='default') {
-  let color = '255,0,0';   // default: red (as requested)
-  let size = 4;
-  if (type==='fire') { color = '255,120,0'; size = 5; }
-  if (type==='ice')  { color = '160,220,255'; size = 3; }
-  if (type==='lightning') { color = '120,200,255'; size = 3; }
-  const count = 32;
-  for (let i=0;i<count;i++) particles.push(makeParticle(x,y,color,size));
+function makeParticle(x,y,color,size){
+  return { x,y, vx:(Math.random()-0.5)*6, vy:(Math.random()-0.5)*6, life:24+Math.random()*12, size, color };
 }
-function makeParticle(x,y,color,size) {
-  return {
-    x, y,
-    vx: (Math.random()-0.5)*6,
-    vy: (Math.random()-0.5)*6,
-    life: 24 + Math.random()*12,
-    size,
-    color
-  };
-}
-function drawParticles() {
-  ctx.save();
-  ctx.globalCompositeOperation = 'lighter';
-  particles.forEach((p,pi)=>{
-    p.x += p.vx; p.y += p.vy; p.life--;
-    const a = Math.max(0, p.life/36);
-    ctx.fillStyle = `rgba(${p.color},${a})`;
-    ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI*2); ctx.fill();
-    if (p.life<=0) particles.splice(pi,1);
-  });
+function drawParticles(){
+  ctx.save(); ctx.globalCompositeOperation='lighter';
+  for (let i=particles.length-1;i>=0;i--){
+    const p=particles[i]; p.x+=p.vx; p.y+=p.vy; p.life--;
+    const a=Math.max(0,p.life/36);
+    ctx.fillStyle=`rgba(${p.color},${a})`;
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.size,0,Math.PI*2); ctx.fill();
+    if (p.life<=0) particles.splice(i,1);
+  }
   ctx.restore();
 }
 
-// -------- HELPERS --------
+/* ===== Helpers ===== */
 function perfNow(){ return (performance || Date).now ? (performance.now()/1000) : (Date.now()/1000); }
-
-function findLightningTargets(px,py,angle) {
-  // pick nearest two enemies to the player within a reasonable radius
-  const candidates = enemies
-    .map(e => ({ e, d: Math.hypot(e.x - px, e.y - py) }))
-    .filter(o => o.d < 500)
+function findLightningTargets(px,py,angle){
+  return enemies
+    .map(e=>({e, d: Math.hypot(e.x-px, e.y-py)}))
+    .filter(o=>o.d<500)
     .sort((a,b)=>a.d-b.d)
     .slice(0,2)
     .map(o=>o.e);
-  return candidates;
 }
-
-function dropCollectable(x,y) {
-  const roll = Math.random();
+function dropCollectable(x,y){
+  const roll=Math.random();
   if (roll<0.2) collectables.push(new Collectable(x,y,'heart'));
-  else if (roll<0.6) {
+  else if (roll<0.6){
     const types=['fire','lightning','ice'];
     collectables.push(new Collectable(x,y, types[Math.floor(Math.random()*types.length)]));
   }
 }
 
-// -------- BACKGROUNDS --------
+/* ===== BG, Entities, Loop ===== */
 const bgObjs = [
   new Background(bgLayers[0], 0),
   new Background(bgLayers[1], 0.2),
@@ -376,112 +407,103 @@ const bgObjs = [
   new Background(bgLayers[3], 1.0)
 ];
 
-// -------- UPDATE/DRAW --------
-function update() {
-  // parallax direction purely from player intent; enemies unaffected
-  const dir = player && player.vx < -0.1 ? -1 : 1;
-  bgObjs.forEach(bg => bg.update(dir));
+let projectiles=[], enemies=[], collectables=[], effects=[], floatTexts=[];
+let enemySpawnTimer=0; let playerObjReady=false;
 
+function resetGame(){
+  player = new Player();
+  projectiles.length=0; enemies.length=0; collectables.length=0; effects.length=0; floatTexts.length=0; particles.length=0;
+  enemySpawnTimer=0; cameraShake=0; gameOver=false;
+}
+
+function update(){
+  const dir = player && player.vx < -0.1 ? -1 : 1; // parallax cosmetic reversal
+  bgObjs.forEach(bg=>bg.update(dir));
   player.update();
 
-  // projectiles & collisions
-  projectiles.forEach((p,pi)=>{
-    p.update();
-    if (p.life<=0) projectiles.splice(pi,1);
-  });
+  for (let i=projectiles.length-1;i>=0;i--){
+    const p=projectiles[i]; p.update(); if (p.life<=0) projectiles.splice(i,1);
+  }
+  for (let i=effects.length-1;i>=0;i--){
+    const ef=effects[i]; ef.update(); if (ef.life<=0) effects.splice(i,1);
+  }
 
-  // effects (lightning)
-  effects.forEach((ef,ei)=>{ ef.update(); if (ef.life<=0) effects.splice(ei,1); });
-
-  enemies.forEach((e,ei)=>{
-    e.update();
-    if (e.x + e.width < 0) enemies.splice(ei,1);
-
+  for (let ei=enemies.length-1; ei>=0; ei--){
+    const e=enemies[ei]; e.update();
+    if (e.x + e.width < 0) { enemies.splice(ei,1); continue; }
     // player collision
-    if (player.x < e.x+e.width && player.x+player.width > e.x && player.y < e.y+e.height && player.y+player.height > e.y) {
-      player.takeDamage(); enemies.splice(ei,1);
+    if (player.x < e.x+e.width && player.x+player.width > e.x && player.y < e.y+e.height && player.y+player.height > e.y){
+      player.takeDamage(); enemies.splice(ei,1); continue;
     }
-
     // projectile hits
-    projectiles.forEach((p,pi)=>{
-      if (p.x < e.x + e.width && p.x > e.x && p.y > e.y && p.y < e.y + e.height) {
+    for (let pi=projectiles.length-1; pi>=0; pi--){
+      const p=projectiles[pi];
+      if (p.x < e.x + e.width && p.x > e.x && p.y > e.y && p.y < e.y + e.height){
         e.hp -= weaponStats[p.type].damage;
-        if (p.type==='ice') { e.slowTimer = 60; spawnHitParticles(p.x,p.y,'ice'); }
-        else if (p.type==='fire') {
+        if (p.type==='ice'){ e.slowTimer=60; spawnHitParticles(p.x,p.y,'ice'); }
+        else if (p.type==='fire'){
           spawnHitParticles(p.x,p.y,'fire');
-          // splash
-          enemies.forEach(o=>{
-            if (o!==e && Math.hypot(o.x - e.x, o.y - e.y) < 60) o.hp--;
-          });
-        } else {
-          spawnHitParticles(p.x,p.y,'default');
-        }
+          enemies.forEach(o=>{ if (o!==e && Math.hypot(o.x-e.x, o.y-e.y)<60) o.hp--; });
+        } else { spawnHitParticles(p.x,p.y,'default'); }
         projectiles.splice(pi,1);
         sfxHit.currentTime=0; sfxHit.play();
-
-        if (e.hp <= 0) {
+        if (e.hp<=0){
           spawnExplosion(e.x+e.width/2, e.y+e.height/2);
-          dropCollectable(e.x, e.y);
+          dropCollectable(e.x,e.y);
           enemies.splice(ei,1);
-          cameraShake = 10;
+          cameraShake=10;
+          break;
         }
       }
-    });
-  });
+    }
+  }
 
   // collectables
-  collectables.forEach((c,ci)=>{
-    c.update();
-    if (player.x < c.x+c.size && player.x+player.width > c.x && player.y < c.y+c.size && player.y+player.height > c.y) {
-      if (c.type==='heart') { if (player.hp<5) player.hp++; }
+  for (let ci=collectables.length-1; ci>=0; ci--){
+    const c=collectables[ci]; c.update();
+    if (player.x < c.x+c.size && player.x+player.width > c.x && player.y < c.y+c.size && player.y+player.height > c.y){
+      if (c.type==='heart'){ if (player.hp<5) player.hp++; }
       else { player.weapon = c.type; }
       sfxPickup.currentTime=0; sfxPickup.play();
       collectables.splice(ci,1);
     }
-  });
+  }
 
-  // spawns
-  if (enemySpawnTimer <= 0) { enemies.push(new Enemy()); enemySpawnTimer = 90; } else enemySpawnTimer--;
-
+  if (enemySpawnTimer<=0){ enemies.push(new Enemy()); enemySpawnTimer=90; } else enemySpawnTimer--;
   if (cameraShake>0) cameraShake--;
 }
 
-function draw() {
-  const shakeX = cameraShake ? Math.random()*cameraShake - cameraShake/2 : 0;
-  const shakeY = cameraShake ? Math.random()*cameraShake - cameraShake/2 : 0;
-  ctx.save(); ctx.translate(shakeX, shakeY);
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-  bgObjs.forEach(bg => bg.draw());
+function draw(){
+  const sx = cameraShake ? Math.random()*cameraShake - cameraShake/2 : 0;
+  const sy = cameraShake ? Math.random()*cameraShake - cameraShake/2 : 0;
+  ctx.save(); ctx.translate(sx,sy);
+  ctx.clearRect(0,0,window.innerWidth,window.innerHeight);
+  bgObjs.forEach(bg=>bg.draw());
   player.draw();
   projectiles.forEach(p=>p.draw());
   effects.forEach(e=>e.draw());
   enemies.forEach(e=>e.draw());
   collectables.forEach(c=>c.draw());
   drawParticles();
-  floatTexts.forEach((ft,fi)=>{ ft.update(); if (ft.life<=0) floatTexts.splice(fi,1); else ft.draw(); });
+  for (let i=floatTexts.length-1;i>=0;i--){ const ft=floatTexts[i]; ft.update(); if (ft.life<=0) floatTexts.splice(i,1); else ft.draw(); }
   ctx.restore();
 }
 
-function drawStartScreen() {
-  ctx.fillStyle = 'black'; ctx.fillRect(0,0,canvas.width,canvas.height);
-  ctx.fillStyle = 'white'; ctx.font = '48px sans-serif'; ctx.textAlign = 'center';
-  ctx.fillText('Wizard Carpet Quest', canvas.width/2, canvas.height/2 - 40);
-  ctx.font = '24px sans-serif';
-  ctx.fillText(gameOver ? 'Game Over - Click or Press Any Key to Restart' : 'Press Any Key or Click to Start', canvas.width/2, canvas.height/2 + 20);
+function drawStartScreen(){
+  ctx.fillStyle='black'; ctx.fillRect(0,0,window.innerWidth,window.innerHeight);
+  ctx.fillStyle='white'; ctx.font='48px sans-serif'; ctx.textAlign='center';
+  ctx.fillText('Wizard Carpet Quest', window.innerWidth/2, window.innerHeight/2 - 40);
+  ctx.font='24px sans-serif';
+  ctx.fillText(gameOver ? 'Game Over — Tap/Press to Restart' : 'Tap/Press Any Key to Start', window.innerWidth/2, window.innerHeight/2 + 20);
 }
 
-// -------- LOOP --------
-function loop() {
+function loop(){
   if (!started || gameOver) drawStartScreen();
   else { update(); draw(); }
   requestAnimationFrame(loop);
 }
-resetGame(); // ensure objects exist before first loop
+resetGame();
 loop();
-
-window.addEventListener('resize', () => {
-  canvas.width = window.innerWidth; canvas.height = window.innerHeight;
-});
 </script>
 </body>
 </html>
