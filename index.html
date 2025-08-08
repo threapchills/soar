@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <title>Wizard Carpet Quest</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
+<link rel="icon" href="data:,">
 <style>
   :root { --ui-fade: 0.35 }
   html, body { height:100%; }
@@ -371,7 +372,6 @@ class FloatText{
 }
 
 /* ========= Particles ========= */
-let particles=[];
 function spawnExplosion(x,y){
   for(let i=0;i<28;i++) particles.push(makeParticle(x,y,(Math.random()<0.6)?'255,120,0':'255,60,0',5));
 }
