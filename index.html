@@ -147,7 +147,9 @@ const sfxPickup = new Audio('assets/pickup.wav');
 /* ========= Game State ========= */
 let started=false, gameOver=false, cameraShake=0;
 let bgHue=0, bgHueTimer=0;
-let player, projectiles, enemies, particles, collectables, effects, floatTexts, enemySpawnTimer;
+let dayHue=0, worldBrightness=1, timeOfDay=0, dayCycle=120*60;
+let weather='clear', weatherTimer=0, weatherParticles=[], lightningFlash=0;
+let player, projectiles, enemies, particles, collectables, effects, floatTexts, enemySpawnTimer, boss, bossProjectiles, bossSpawnTimer;
 
 const hueMap = { fire: 0, lightning: 220, ice: 180 };
 const weaponStats = {
@@ -175,9 +177,15 @@ window.addEventListener('click', startGame, {passive:true});
 window.addEventListener('keydown', startGame, {passive:true});
 window.addEventListener('touchstart', startGame, {passive:true});
 
+function setWeather(){
+  const types=['clear','rain','snow','sand','wind'];
+  weather = types[Math.floor(Math.random()*types.length)];
+  weatherTimer = 600 + Math.random()*1200;
+}
+
 /* ========= Classes ========= */
 class Background{
-  constructor(img,speed){ this.img=img; this.speed=speed; this.x=0; }
+  constructor(img,speed,hueMult=1,baseHue=0){ this.img=img; this.speed=speed; this.x=0; this.hueMult=hueMult; this.baseHue=baseHue; }
   update(dir){
     if (this.speed===0) return; // bg0 static
     this.x -= this.speed * (dir>=0 ? 1 : -1); // reverse cosmetically when moving left
@@ -187,11 +195,15 @@ class Background{
   }
   draw(){
     const w = window.innerWidth, h = window.innerHeight;
+    ctx.save();
+    const hue = this.baseHue + dayHue + bgHue * this.hueMult;
+    ctx.filter = `hue-rotate(${hue}deg) brightness(${worldBrightness})`;
     ctx.drawImage(this.img, this.x, 0, w, h);
     if (this.speed!==0){
       ctx.drawImage(this.img, this.x + w, 0, w, h);
       ctx.drawImage(this.img, this.x - w, 0, w, h);
     }
+    ctx.restore();
   }
 }
 
@@ -328,6 +340,45 @@ class LightningEffect{
   }
 }
 
+class BossProjectile{
+  constructor(x,y,tx,ty){
+    this.x=x; this.y=y;
+    const ang=Math.atan2(ty-y, tx-x);
+    this.vx=Math.cos(ang)*4; this.vy=Math.sin(ang)*4;
+    this.size=8;
+  }
+  update(){ this.x+=this.vx; this.y+=this.vy; }
+  draw(){ ctx.fillStyle='rgba(255,50,50,1)'; ctx.beginPath(); ctx.arc(this.x,this.y,this.size,0,Math.PI*2); ctx.fill(); }
+}
+
+class Boss{
+  constructor(type){
+    this.type=type;
+    this.sprite=enemiesSprites[type];
+    this.width=220; this.height=220;
+    this.x=window.innerWidth; this.y=window.innerHeight/2 - this.height/2;
+    this.hp=40 + type*10;
+    this.timer=0; this.vx=0; this.vy=0;
+  }
+  update(){
+    this.timer++;
+    if(this.type===0){
+      this.x -= 1.5;
+      this.y += Math.sin(this.timer*0.03)*2;
+      if(this.timer%120===0) enemies.push(new Enemy());
+    } else if(this.type===1){
+      if(this.timer%180===0){ this.vx=-6; this.vy=(player.y-this.y)/60; }
+      this.x += this.vx; this.y += this.vy; this.vx*=0.98; this.vy*=0.98;
+    } else if(this.type===2){
+      this.x -= 0.8;
+      this.y += Math.sin(this.timer*0.04)*3;
+      if(this.timer%90===0) bossProjectiles.push(new BossProjectile(this.x, this.y+this.height/2, player.x, player.y));
+    }
+    this.y = Math.max(0, Math.min(window.innerHeight - this.height, this.y));
+  }
+  draw(){ ctx.drawImage(this.sprite, this.x, this.y, this.width, this.height); }
+}
+
 class Enemy{
   constructor(){
     this.sprite = enemiesSprites[Math.floor(Math.random()*enemiesSprites.length)];
@@ -413,6 +464,48 @@ function drawParticles(){
   ctx.restore();
 }
 
+function updateWeather(){
+  if(--weatherTimer<=0) setWeather();
+  const w=window.innerWidth, h=window.innerHeight;
+  if(weather==='rain'){
+    for(let i=0;i<5;i++) weatherParticles.push({x:Math.random()*w, y:-10, vx:-2+Math.random(), vy:10+Math.random()*4, type:'rain', life:h});
+  } else if(weather==='snow'){
+    for(let i=0;i<2;i++) weatherParticles.push({x:Math.random()*w, y:-10, vx:-1+Math.random()*2, vy:2+Math.random()*1, type:'snow', life:h});
+  } else if(weather==='sand'){
+    for(let i=0;i<4;i++) weatherParticles.push({x:Math.random()*w, y:Math.random()*h, vx:-3-Math.random()*2, vy:Math.random()-0.5, type:'sand', life:200});
+  } else if(weather==='wind'){
+    if(Math.random()<0.3) weatherParticles.push({x:Math.random()*w, y:Math.random()*h, vx:-2-Math.random()*2, vy:Math.random()-0.5, type:'leaf', rot:Math.random()*Math.PI, life:200});
+  }
+  if((weather==='rain' || weather==='sand') && Math.random()<0.002) lightningFlash=5;
+  for(let i=weatherParticles.length-1;i>=0;i--){
+    const p=weatherParticles[i]; p.x+=p.vx; p.y+=p.vy; p.life--;
+    if(p.type==='rain') p.vy+=0.1;
+    if(p.life<=0 || p.y>h+20 || p.x<-20 || p.x>w+20) weatherParticles.splice(i,1);
+  }
+}
+
+function drawWeather(){
+  ctx.save();
+  weatherParticles.forEach(p=>{
+    if(p.type==='rain'){
+      ctx.strokeStyle='rgba(160,160,255,0.6)';
+      ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(p.x+p.vx*2,p.y+p.vy*2); ctx.stroke();
+    } else if(p.type==='snow'){
+      ctx.fillStyle='rgba(255,255,255,0.8)';
+      ctx.beginPath(); ctx.arc(p.x,p.y,2,0,Math.PI*2); ctx.fill();
+    } else if(p.type==='sand'){
+      ctx.fillStyle='rgba(194,178,128,0.7)';
+      ctx.fillRect(p.x,p.y,2,2);
+    } else if(p.type==='leaf'){
+      ctx.fillStyle='rgba(200,150,50,0.8)';
+      ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(p.rot||0); ctx.fillRect(-3,-1,6,2); ctx.restore();
+      p.rot += 0.05;
+    }
+  });
+  ctx.restore();
+  if(lightningFlash>0){ ctx.fillStyle=`rgba(255,255,255,${lightningFlash/10})`; ctx.fillRect(0,0,window.innerWidth,window.innerHeight); lightningFlash--; }
+}
+
 /* ========= Helpers ========= */
 function perfNow(){ return (performance || Date).now ? (performance.now()/1000) : (Date.now()/1000); }
 function findLightningTargets(px,py,angle){
@@ -433,11 +526,12 @@ function dropCollectable(x,y){
 }
 
 /* ========= Backgrounds ========= */
+const layerHueOffsets=[0, Math.random()*60-30, Math.random()*60-30, Math.random()*60-30];
 const bgObjs = [
-  new Background(bgLayers[0], 0),
-  new Background(bgLayers[1], 0.2),
-  new Background(bgLayers[2], 0.5),
-  new Background(bgLayers[3], 1.0)
+  new Background(bgLayers[0], 0, 0, layerHueOffsets[0]),
+  new Background(bgLayers[1], 0.2, 0.5, layerHueOffsets[1]),
+  new Background(bgLayers[2], 0.5, 1.0, layerHueOffsets[2]),
+  new Background(bgLayers[3], 1.0, 1.2, layerHueOffsets[3])
 ];
 
 /* ========= Core Loop ========= */
@@ -449,37 +543,42 @@ function resetGame(){
   effects = [];
   floatTexts = [];
   particles = [];
+  weatherParticles = [];
+  bossProjectiles = [];
   enemySpawnTimer = 0;
   cameraShake = 0;
   bgHue = 0; bgHueTimer = 0;
+  dayHue = 0; worldBrightness = 1; timeOfDay = 0;
+  lightningFlash = 0; setWeather();
+  boss = null; bossSpawnTimer = 60*180 + Math.random()*60*180;
   gameOver = false;
 }
 
 function update(){
-  // Parallax reversal is cosmetic only
   const dir = player && player.vx < -0.1 ? -1 : 1;
   if (bgHueTimer>0){ bgHue = (bgHue + 2) % 360; bgHueTimer--; } else { bgHue = 0; }
+
+  timeOfDay = (timeOfDay + 1) % dayCycle;
+  const p = timeOfDay / dayCycle;
+  worldBrightness = 0.5 + 0.5*Math.sin(p*2*Math.PI);
+  dayHue = 20*Math.sin(p*2*Math.PI);
+
+  updateWeather();
   bgObjs.forEach(bg=>bg.update(dir));
 
   player.update();
 
-  for (let i=projectiles.length-1;i>=0;i--){
-    const p=projectiles[i]; p.update(); if (p.life<=0) projectiles.splice(i,1);
-  }
-  for (let i=effects.length-1;i>=0;i--){
-    const ef=effects[i]; ef.update(); if (ef.life<=0) effects.splice(i,1);
-  }
+  for (let i=projectiles.length-1;i>=0;i--){ const pj=projectiles[i]; pj.update(); if (pj.life<=0) projectiles.splice(i,1); }
+  for (let i=effects.length-1;i>=0;i--){ const ef=effects[i]; ef.update(); if (ef.life<=0) effects.splice(i,1); }
 
   for (let ei=enemies.length-1; ei>=0; ei--){
     const e=enemies[ei]; e.update();
     if (e.x + e.width < 0) { enemies.splice(ei,1); continue; }
 
-    // Player collision
     if (player.x < e.x+e.width && player.x+player.width > e.x && player.y < e.y+e.height && player.y+player.height > e.y){
       player.takeDamage(); enemies.splice(ei,1); continue;
     }
 
-    // Projectile hits
     for (let pi=projectiles.length-1; pi>=0; pi--){
       const p=projectiles[pi];
       if (p.x < e.x + e.width && p.x > e.x && p.y > e.y && p.y < e.y + e.height){
@@ -503,7 +602,38 @@ function update(){
     }
   }
 
-  // Collectables
+  if(boss){
+    boss.update();
+    if (player.x < boss.x+boss.width && player.x+player.width > boss.x && player.y < boss.y+boss.height && player.y+player.height > boss.y){
+      player.takeDamage();
+    }
+    for (let pi=projectiles.length-1; pi>=0; pi--){
+      const p=projectiles[pi];
+      if (p.x < boss.x + boss.width && p.x > boss.x && p.y > boss.y && p.y < boss.y + boss.height){
+        boss.hp -= weaponStats[p.type].damage;
+        spawnHitParticles(p.x,p.y,'default');
+        projectiles.splice(pi,1);
+        if (boss.hp<=0){
+          spawnExplosion(boss.x+boss.width/2, boss.y+boss.height/2);
+          boss=null; bossSpawnTimer = 60*180 + Math.random()*60*180; cameraShake=20;
+          break;
+        }
+      }
+    }
+  } else {
+    if (bossSpawnTimer<=0) { boss = new Boss(Math.floor(Math.random()*enemiesSprites.length)); }
+    else bossSpawnTimer--;
+    if (enemySpawnTimer<=0){ enemies.push(new Enemy()); enemySpawnTimer=90; } else enemySpawnTimer--;
+  }
+
+  for(let bi=bossProjectiles.length-1; bi>=0; bi--){
+    const b=bossProjectiles[bi]; b.update();
+    if (player.x < b.x+b.size && player.x+player.width > b.x && player.y < b.y+b.size && player.y+player.height > b.y){
+      player.takeDamage(); bossProjectiles.splice(bi,1); continue;
+    }
+    if (b.x < -50 || b.x > window.innerWidth+50 || b.y < -50 || b.y > window.innerHeight+50) bossProjectiles.splice(bi,1);
+  }
+
   for (let ci=collectables.length-1; ci>=0; ci--){
     const c=collectables[ci]; c.update();
     if (player.x < c.x+c.size && player.x+player.width > c.x && player.y < c.y+c.size && player.y+player.height > c.y){
@@ -514,8 +644,6 @@ function update(){
     }
   }
 
-  if (enemySpawnTimer<=0){ enemies.push(new Enemy()); enemySpawnTimer=90; } else enemySpawnTimer--;
-
   if (cameraShake>0) cameraShake--;
 }
 
@@ -524,16 +652,16 @@ function draw(){
   const sy = cameraShake ? Math.random()*cameraShake - cameraShake/2 : 0;
   ctx.save(); ctx.translate(sx,sy);
   ctx.clearRect(0,0,window.innerWidth,window.innerHeight);
-  ctx.save();
-  ctx.filter = `hue-rotate(${bgHue}deg)`;
   bgObjs.forEach(bg=>bg.draw());
-  ctx.restore();
   player.draw();
   projectiles.forEach(p=>p.draw());
   effects.forEach(e=>e.draw());
   enemies.forEach(e=>e.draw());
+  if(boss) boss.draw();
+  bossProjectiles.forEach(b=>b.draw());
   collectables.forEach(c=>c.draw());
   drawParticles();
+  drawWeather();
   for (let i=floatTexts.length-1;i>=0;i--){ const ft=floatTexts[i]; ft.update(); if (ft.life<=0) floatTexts.splice(i,1); else ft.draw(); }
   ctx.restore();
 }
