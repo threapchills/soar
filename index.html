@@ -218,6 +218,7 @@ class Player{
     this.vx=0; this.vy=0; this.accel=0.4; this.maxSpeed=5;
     this.bob=0; this.flip=false;
     this.hp=5; this.invuln=0;
+    this.bonusShots=0;
     this.weapon='default';
     this.cooldownTimer=0;
   }
@@ -253,15 +254,22 @@ class Player{
   shoot(){
     sfxShoot.currentTime=0; sfxShoot.play();
     const angle = Math.atan2(mouse.y - this.y, mouse.x - this.x);
+    const shots = 1 + this.bonusShots;
     if (this.weapon==='default' || this.weapon==='ice' || this.weapon==='fire'){
-      projectiles.push(new Projectile(this.x+this.width/2, this.y, angle, this.weapon));
+      for(let i=0;i<shots;i++){
+        const spread = (i-(shots-1)/2)*0.1;
+        projectiles.push(new Projectile(this.x+this.width/2, this.y, angle+spread, this.weapon));
+      }
     } else if (this.weapon==='lightning'){
-      effects.push(new LightningEffect(this.x+this.width/2, this.y, angle));
+      for(let i=0;i<shots;i++){
+        const spread = (i-(shots-1)/2)*0.1;
+        effects.push(new LightningEffect(this.x+this.width/2, this.y, angle+spread));
+      }
     }
     for (let i=0;i<8;i++) particles.push(makeParticle(this.x+this.width/2, this.y, '255,220,150', 2));
     cameraShake = Math.max(cameraShake,2);
   }
-  takeDamage(){ if (this.invuln>0) return; this.hp--; this.invuln=30; if (this.hp<=0) gameOver=true; }
+  takeDamage(){ if (this.invuln>0) return; this.hp--; this.invuln=30; this.bonusShots=0; if (this.hp<=0) gameOver=true; }
   draw(){
     ctx.save();
     ctx.translate(this.x, this.y);
@@ -362,26 +370,63 @@ class Boss{
     this.sprite=enemiesSprites[type];
     this.width=384; this.height=384;
     this.x=window.innerWidth; this.y=window.innerHeight/2 - this.height/2;
-    this.hp=200 + type*50;
-    this.timer=0; this.vx=0; this.vy=0; this.anim=0;
+    this.hp=200 + type*50; this.maxHp=this.hp;
+    this.timer=0; this.anim=0; this.spiral=0;
+    this.targetX = window.innerWidth - this.width - 80;
   }
   update(dt){
     this.timer+=dt; this.anim+=dt;
+    this.x += (this.targetX - this.x)*0.02*dt;
+    const cx=this.x+this.width/2, cy=this.y+this.height/2;
     if(this.type===0){
-      this.x -= 1.5*dt;
       this.y += Math.sin(this.anim*0.03*60)*2*dt;
-      if(this.timer>=120){ enemies.push(new Enemy()); this.timer=0; }
+      if(this.timer>=60){
+        const base=Math.atan2(player.y-cy, player.x-cx);
+        for(let i=-2;i<=2;i++){
+          const ang=base+i*0.2;
+          const tx=cx+Math.cos(ang)*1000;
+          const ty=cy+Math.sin(ang)*1000;
+          bossProjectiles.push(new BossProjectile(cx,cy,tx,ty));
+        }
+        this.timer=0;
+      }
     } else if(this.type===1){
-      if(this.timer>=180){ this.vx=-6; this.vy=(player.y-this.y)/60; this.timer=0; }
-      this.x += this.vx*dt; this.y += this.vy*dt; this.vx*=Math.pow(0.98,dt); this.vy*=Math.pow(0.98,dt);
+      this.y += Math.sin(this.anim*0.02*60)*3*dt;
+      if(this.timer>=150){
+        for(let i=0;i<10;i++){
+          const ang=(i/10)*Math.PI*2;
+          const tx=cx+Math.cos(ang)*1000;
+          const ty=cy+Math.sin(ang)*1000;
+          bossProjectiles.push(new BossProjectile(cx,cy,tx,ty));
+        }
+        this.timer=0;
+      }
     } else if(this.type===2){
-      this.x -= 0.8*dt;
       this.y += Math.sin(this.anim*0.04*60)*3*dt;
-      if(this.timer>=90){ bossProjectiles.push(new BossProjectile(this.x, this.y+this.height/2, player.x, player.y)); this.timer=0; }
+      this.spiral += 0.2*dt;
+      if(this.timer>=15){
+        const ang=this.spiral;
+        const tx=cx+Math.cos(ang)*1000;
+        const ty=cy+Math.sin(ang)*1000;
+        bossProjectiles.push(new BossProjectile(cx,cy,tx,ty));
+        this.timer=0;
+      }
     }
     this.y = Math.max(0, Math.min(window.innerHeight - this.height, this.y));
   }
-  draw(){ ctx.drawImage(this.sprite, this.x, this.y, this.width, this.height); }
+  draw(){
+    ctx.drawImage(this.sprite, this.x, this.y, this.width, this.height);
+    ctx.save();
+    const barW=this.width, barH=10;
+    ctx.fillStyle='rgba(0,0,0,0.5)';
+    ctx.fillRect(this.x, this.y-barH-4, barW, barH);
+    ctx.fillStyle='red';
+    ctx.fillRect(this.x, this.y-barH-4, barW*(this.hp/this.maxHp), barH);
+    ctx.strokeStyle='white'; ctx.strokeRect(this.x, this.y-barH-4, barW, barH);
+    ctx.fillStyle='white'; ctx.font='16px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(this.hp, this.x+barW/2, this.y-barH-9);
+    ctx.restore();
+  }
 }
 
 class Enemy{
@@ -446,6 +491,9 @@ class FloatText{
 /* ========= Particles ========= */
 function spawnExplosion(x,y){
   for(let i=0;i<28;i++) particles.push(makeParticle(x,y,(Math.random()<0.6)?'255,120,0':'255,60,0',5));
+}
+function spawnBlood(x,y){
+  for(let i=0;i<120;i++) particles.push(makeParticle(x,y,'150,0,0',6));
 }
 function spawnHitParticles(x,y,type='default'){
   let color='255,0,0', size=4;
@@ -612,7 +660,7 @@ function update(dt){
           dropCollectable(e.x,e.y);
           enemies.splice(ei,1);
           killCount++;
-          if(killCount>=25 && !boss) spawnBoss();
+          if(killCount>=20 && !boss) spawnBoss();
           cameraShake=10;
           break;
         }
@@ -632,7 +680,10 @@ function update(dt){
         spawnHitParticles(p.x,p.y,'default');
         projectiles.splice(pi,1);
         if (boss.hp<=0){
-          spawnExplosion(boss.x+boss.width/2, boss.y+boss.height/2);
+          const bx=boss.x+boss.width/2, by=boss.y+boss.height/2;
+          spawnExplosion(bx, by);
+          spawnBlood(bx, by);
+          player.bonusShots++;
           boss=null; bossSpawnTimer = 60*60 + Math.random()*60*60; setWeather(); weatherParticles=[]; cameraShake=20;
           break;
         }
