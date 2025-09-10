@@ -146,6 +146,7 @@ const sfxPickup = new Audio('assets/pickup.wav');
 
 /* ========= Game State ========= */
 let started=false, gameOver=false, cameraShake=0;
+let bgHue=0, bgHueTimer=0;
 let player, projectiles, enemies, particles, collectables, effects, floatTexts, enemySpawnTimer;
 
 const hueMap = { fire: 0, lightning: 220, ice: 180 };
@@ -242,6 +243,8 @@ class Player{
     } else if (this.weapon==='lightning'){
       effects.push(new LightningEffect(this.x+this.width/2, this.y, angle));
     }
+    for (let i=0;i<8;i++) particles.push(makeParticle(this.x+this.width/2, this.y, '255,220,150', 2));
+    cameraShake = Math.max(cameraShake,2);
   }
   takeDamage(){ if (this.invuln>0) return; this.hp--; this.invuln=30; if (this.hp<=0) gameOver=true; }
   draw(){
@@ -266,13 +269,18 @@ class Projectile{
     this.vx=Math.cos(angle)*this.speed;
     this.vy=Math.sin(angle)*this.speed;
     this.size=6; this.life=60;
+    this.color = (type==='fire')?'255,120,0':(type==='ice')?'150,200,255':'255,255,150';
   }
-  update(){ this.x+=this.vx; this.y+=this.vy; this.life--; }
+  update(){
+    this.x+=this.vx; this.y+=this.vy; this.life--;
+    const trail = makeParticle(this.x, this.y, this.color, 2);
+    trail.vx *= 0.2; trail.vy *= 0.2; trail.life = 20;
+    particles.push(trail);
+  }
   draw(){
-    let col = (this.type==='fire')?'255,120,0':(this.type==='ice')?'150,200,255':'255,255,150';
     ctx.save(); ctx.globalCompositeOperation='lighter';
-    ctx.fillStyle=`rgba(${col},0.15)`; ctx.beginPath(); ctx.arc(this.x,this.y,this.size*2.4,0,Math.PI*2); ctx.fill();
-    ctx.fillStyle=`rgba(${col},1)`; ctx.beginPath(); ctx.arc(this.x,this.y,this.size,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle=`rgba(${this.color},0.15)`; ctx.beginPath(); ctx.arc(this.x,this.y,this.size*2.4,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle=`rgba(${this.color},1)`; ctx.beginPath(); ctx.arc(this.x,this.y,this.size,0,Math.PI*2); ctx.fill();
     ctx.restore();
   }
 }
@@ -329,6 +337,7 @@ class Enemy{
     this.x = window.innerWidth + 50;
     this.y = Math.random()*(window.innerHeight - this.height);
     this.baseY = this.y;
+    this.drift = (Math.random()*0.5 + 0.2) * (Math.random()<0.5 ? -1 : 1);
 
     // Movement/HP
     this.baseSpeed = 2 + Math.random()*1.5; // constant world speed
@@ -346,9 +355,15 @@ class Enemy{
     if (this.slowTimer>0) this.slowTimer--;
     this.x -= spd;
 
-    // Proper amplitude sway around baseY
+    // drift baseline up/down
+    this.baseY += this.drift;
+    if (this.baseY < 0 || this.baseY > window.innerHeight - this.height) this.drift *= -1;
+
+    // layered wobble around drifting baseline
     const t = perfNow();
-    this.y = this.baseY + Math.sin(t * this.waveSpeed + this.waveOffset) * this.waveAmp;
+    const wobble = Math.sin(t * this.waveSpeed + this.waveOffset) * this.waveAmp;
+    const wobble2 = Math.sin(t * this.waveSpeed * 1.7 + this.waveOffset * 1.5) * this.waveAmp * 0.25;
+    this.y = this.baseY + wobble + wobble2;
 
     // Stay in vertical bounds
     this.y = Math.max(0, Math.min(window.innerHeight - this.height, this.y));
@@ -436,12 +451,14 @@ function resetGame(){
   particles = [];
   enemySpawnTimer = 0;
   cameraShake = 0;
+  bgHue = 0; bgHueTimer = 0;
   gameOver = false;
 }
 
 function update(){
   // Parallax reversal is cosmetic only
   const dir = player && player.vx < -0.1 ? -1 : 1;
+  if (bgHueTimer>0){ bgHue = (bgHue + 2) % 360; bgHueTimer--; } else { bgHue = 0; }
   bgObjs.forEach(bg=>bg.update(dir));
 
   player.update();
@@ -491,7 +508,7 @@ function update(){
     const c=collectables[ci]; c.update();
     if (player.x < c.x+c.size && player.x+player.width > c.x && player.y < c.y+c.size && player.y+player.height > c.y){
       if (c.type==='heart'){ if (player.hp<5) player.hp++; }
-      else { player.weapon = c.type; }
+      else { player.weapon = c.type; bgHueTimer = 120; }
       sfxPickup.currentTime=0; sfxPickup.play();
       collectables.splice(ci,1);
     }
@@ -507,7 +524,10 @@ function draw(){
   const sy = cameraShake ? Math.random()*cameraShake - cameraShake/2 : 0;
   ctx.save(); ctx.translate(sx,sy);
   ctx.clearRect(0,0,window.innerWidth,window.innerHeight);
+  ctx.save();
+  ctx.filter = `hue-rotate(${bgHue}deg)`;
   bgObjs.forEach(bg=>bg.draw());
+  ctx.restore();
   player.draw();
   projectiles.forEach(p=>p.draw());
   effects.forEach(e=>e.draw());
