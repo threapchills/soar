@@ -149,8 +149,10 @@ let started=false, gameOver=false, cameraShake=0;
 let bgHue=0, bgHueTimer=0;
 let dayHue=0, worldBrightness=1, timeOfDay=0, dayCycle=120*60;
 let weather='clear', weatherTimer=0, weatherParticles=[], lightningFlash=0;
+codex/add-hue-shifts,-boss-fights,-and-weather-effects-xg1l2e
 let player, projectiles, enemies, particles, collectables, effects, floatTexts, enemySpawnTimer, boss, bossProjectiles, bossSpawnTimer, killCount;
 let lastTime = 0, frameDt = 1;
+
 
 const hueMap = { fire: 0, lightning: 220, ice: 180 };
 const weaponStats = {
@@ -188,6 +190,7 @@ function setWeather(){
 class Background{
   constructor(img,speed,hueMult=1,baseHue=0){ this.img=img; this.speed=speed; this.x=0; this.hueMult=hueMult; this.baseHue=baseHue; }
   update(dir,dt){
+
     if (this.speed===0) return; // bg0 static
     this.x -= this.speed * (dir>=0 ? 1 : -1) * dt; // reverse cosmetically when moving left
     const w = window.innerWidth;
@@ -348,7 +351,9 @@ class BossProjectile{
     this.vx=Math.cos(ang)*4; this.vy=Math.sin(ang)*4;
     this.size=8;
   }
+
   update(dt){ this.x+=this.vx*dt; this.y+=this.vy*dt; }
+
   draw(){ ctx.fillStyle='rgba(255,50,50,1)'; ctx.beginPath(); ctx.arc(this.x,this.y,this.size,0,Math.PI*2); ctx.fill(); }
 }
 
