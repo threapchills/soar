@@ -155,12 +155,88 @@ bossHazards = [];
 let lastTime = 0, frameDt = 1;
 
 
-const hueMap = { fire: 0, lightning: 220, ice: 180 };
-const weaponStats = {
-  default:   { cooldown: 15, speed: 10, damage: 1 },
-  fire:      { cooldown: 25, speed:  6, damage: 2 },
-  lightning: { cooldown: 30, speed:  0, damage: 2 }, // hitscan
-  ice:       { cooldown: 22, speed:  8, damage: 1 }
+const hueMap = {
+  fire: 0,
+  lightning: 220,
+  ice: 180,
+  rapid: 310,
+  fury: 40,
+  focus: 120,
+  bomb: 300
+};
+
+const weaponDefinitions = {
+  default: {
+    label: 'Arcane Bolt',
+    color: '255,255,150',
+    levels: [
+      { cooldown: 15, speed: 10, damage: 1.1, spread: 0.12, shots: 1, pierce: 0, size: 6, life: 70 },
+      { cooldown: 13, speed: 11, damage: 1.2, spread: 0.1,  shots: 1, pierce: 1, size: 6, life: 80 },
+      { cooldown: 11, speed: 12, damage: 1.35, spread: 0.08, shots: 2, pierce: 1, size: 7, life: 90 }
+    ]
+  },
+  fire: {
+    label: 'Ember Nova',
+    color: '255,140,60',
+    levels: [
+      { cooldown: 24, speed: 6.2, damage: 2.1, spread: 0.07, shots: 1, burnDuration: 160, burnDps: 0.03, aoeRadius: 0, size: 7 },
+      { cooldown: 22, speed: 6.5, damage: 2.3, spread: 0.09, shots: 1, burnDuration: 180, burnDps: 0.05, aoeRadius: 55, size: 7 },
+      { cooldown: 20, speed: 6.8, damage: 2.5, spread: 0.12, shots: 2, burnDuration: 210, burnDps: 0.07, aoeRadius: 70, size: 8 }
+    ]
+  },
+  lightning: {
+    label: 'Storm Lance',
+    color: '150,210,255',
+    levels: [
+      { cooldown: 30, damage: 2.4, chain: 2, chainFalloff: 0.75, shockDuration: 35 },
+      { cooldown: 26, damage: 2.6, chain: 3, chainFalloff: 0.8, shockDuration: 45 },
+      { cooldown: 22, damage: 3.0, chain: 4, chainFalloff: 0.85, shockDuration: 55, stormForks: 2 }
+    ]
+  },
+  ice: {
+    label: 'Frost Shard',
+    color: '160,220,255',
+    levels: [
+      { cooldown: 22, speed: 8.2, damage: 1.2, spread: 0.08, shots: 1, slowDuration: 150, chillFactor: 0.5, size: 6 },
+      { cooldown: 20, speed: 8.5, damage: 1.35, spread: 0.1,  shots: 1, slowDuration: 180, chillFactor: 0.45, size: 6, splinter: 1 },
+      { cooldown: 18, speed: 9.0, damage: 1.45, spread: 0.11, shots: 2, slowDuration: 210, chillFactor: 0.4, size: 7, splinter: 2 }
+    ]
+  }
+};
+
+const powerUpDefinitions = {
+  rapid: {
+    label: 'Rapid Fire',
+    duration: 480,
+    apply(stats){ stats.cooldown *= 0.75; }
+  },
+  fury: {
+    label: 'Arcane Fury',
+    duration: 420,
+    apply(stats){ stats.damage *= 1.35; stats.aoeRadius = (stats.aoeRadius||0) + 20; }
+  },
+  focus: {
+    label: 'Focus Sigil',
+    duration: 540,
+    apply(stats){ stats.spread *= 0.5; stats.pierce = (stats.pierce||0) + 1; stats.shots = (stats.shots||1); }
+  },
+  overdrive: {
+    label: 'Overdrive Glyph',
+    duration: 360,
+    apply(stats){ stats.shots = (stats.shots||1) + 1; stats.damage *= 1.15; }
+  }
+};
+
+const collectableVisuals = {
+  heart: { sprite: heartSprite },
+  fire: { sprite: orbSprite, hue: hueMap.fire },
+  lightning: { sprite: orbSprite, hue: hueMap.lightning },
+  ice: { sprite: orbSprite, hue: hueMap.ice },
+  rapid: { sprite: orbSprite, hue: hueMap.rapid, glow: 'rgba(255,120,255,0.55)' },
+  fury: { sprite: orbSprite, hue: hueMap.fury, glow: 'rgba(255,180,90,0.55)' },
+  focus: { sprite: orbSprite, hue: hueMap.focus, glow: 'rgba(150,255,180,0.55)' },
+  overdrive: { sprite: orbSprite, hue: 260, glow: 'rgba(200,170,255,0.55)' },
+  bomb: { sprite: orbSprite, hue: hueMap.bomb, glow: 'rgba(255,140,220,0.6)' }
 };
 
 /* ========= Start / Music ========= */
@@ -229,9 +305,87 @@ class Player{
     this.hp=5; this.invuln=0;
     this.bonusShots=0;
     this.weapon='default';
+    this.weaponLevels = { default: 0, fire: -1, lightning: -1, ice: -1 };
+    this.powerUps=[];
     this.cooldownTimer=0;
+    this.cachedProfile=null;
+    this.bombs=1;
+    this.bombCooldown=0;
+    this.bombHeld=false;
+  }
+  getWeaponProfile(){
+    const def = weaponDefinitions[this.weapon] || weaponDefinitions.default;
+    const maxIdx = def.levels.length-1;
+    const tier = this.weaponLevels[this.weapon];
+    const idx = Math.max(0, Math.min(maxIdx, tier!==undefined ? Math.max(tier,0) : 0));
+    const base = def.levels[idx] || def.levels[0];
+    const stats = Object.assign({
+      cooldown: 15,
+      speed: 9,
+      damage: 1,
+      spread: 0.1,
+      shots: 1,
+      pierce: 0,
+      size: 6,
+      life: 70
+    }, base);
+    stats.element = this.weapon;
+    stats.color = def.color;
+    stats.label = def.label;
+    this.powerUps.forEach(p=>{
+      const pow = powerUpDefinitions[p.type];
+      if (pow && typeof pow.apply==='function') pow.apply(stats);
+    });
+    stats.cooldown = Math.max(6, stats.cooldown || 15);
+    stats.spread = stats.spread===undefined ? 0.1 : stats.spread;
+    stats.shots = Math.max(1, Math.round((stats.shots||1) + (this.bonusShots||0)));
+    stats.pierce = Math.max(0, Math.round(stats.pierce || 0));
+    this.cachedProfile = stats;
+    return stats;
+  }
+  updatePowerUps(dt){
+    for (let i=this.powerUps.length-1;i>=0;i--){
+      const p=this.powerUps[i];
+      p.timer-=dt;
+      if (p.timer<=0) this.powerUps.splice(i,1);
+    }
+  }
+  applyPowerUp(type){
+    const def = powerUpDefinitions[type];
+    if (!def) return;
+    const existing = this.powerUps.find(p=>p.type===type);
+    if (existing) existing.timer = def.duration;
+    else this.powerUps.push({ type, timer: def.duration });
+    floatTexts.push(new FloatText(this.x-40, this.y-60, def.label, '#ffd27f'));
+  }
+  upgradeWeapon(type){
+    const def = weaponDefinitions[type];
+    if (!def) return;
+    if (this.weaponLevels[type] === undefined) this.weaponLevels[type] = -1;
+    if (this.weaponLevels[type] < 0){
+      this.weaponLevels[type] = 0;
+      floatTexts.push(new FloatText(this.x-80, this.y-80, `${def.label}`, '#ffe6ff'));
+    } else if (this.weaponLevels[type] < def.levels.length-1){
+      this.weaponLevels[type]++;
+      floatTexts.push(new FloatText(this.x-80, this.y-80, `${def.label} Lv.${this.weaponLevels[type]+1}`, '#ffe6ff'));
+    } else {
+      this.applyPowerUp('overdrive');
+    }
+    this.weapon = type;
+    this.cooldownTimer = 0;
+  }
+  tryBomb(){
+    if (this.bombs<=0 || this.bombCooldown>0) return;
+    const profile = this.cachedProfile || this.getWeaponProfile();
+    this.bombs--;
+    this.bombCooldown = 45;
+    effects.push(new ArcaneBomb(this.x+this.width/2, this.y, profile));
+    floatTexts.push(new FloatText(this.x-20, this.y-100, 'Arcane Bomb!', '#ff9cf0'));
+    cameraShake = Math.max(cameraShake, 14);
+    sfxHit.currentTime=0; sfxHit.play();
   }
   update(dt){
+    this.updatePowerUps(dt);
     if (this.invuln>0) this.invuln -= dt;
     let tx=0, ty=0;
     if (keys['w']) ty -= this.accel*dt;
@@ -253,112 +407,284 @@ class Player{
     // bob
     this.bob += 0.05*dt; this.y += Math.sin(this.bob)*0.3*dt;
 
+    const profile = this.getWeaponProfile();
     // shooting with cooldown
     if (mouse.down && this.cooldownTimer<=0){
-      this.shoot();
-      this.cooldownTimer = weaponStats[this.weapon].cooldown;
+      this.shoot(profile);
+      this.cooldownTimer = profile.cooldown;
     }
     if (this.cooldownTimer>0) this.cooldownTimer -= dt;
+    if (this.bombCooldown>0) this.bombCooldown-=dt;
+
+    const bombPressed = keys[' '] || keys['e'];
+    if (bombPressed && !this.bombHeld){ this.tryBomb(); this.bombHeld=true; }
+    if (!bombPressed) this.bombHeld=false;
   }
-  shoot(){
+  shoot(profile){
     sfxShoot.currentTime=0; sfxShoot.play();
     const angle = Math.atan2(mouse.y - this.y, mouse.x - this.x);
-    const shots = 1 + this.bonusShots;
-    if (this.weapon==='default' || this.weapon==='ice' || this.weapon==='fire'){
+    const shots = Math.max(1, profile.shots || 1);
+    if (this.weapon==='lightning'){
       for(let i=0;i<shots;i++){
-        const spread = (i-(shots-1)/2)*0.1;
-        projectiles.push(new Projectile(this.x+this.width/2, this.y, angle+spread, this.weapon));
+        const spread = (i-(shots-1)/2)*(profile.spread || 0.08);
+        effects.push(new LightningEffect(this.x+this.width/2, this.y, angle+spread, profile));
       }
-    } else if (this.weapon==='lightning'){
+    } else {
       for(let i=0;i<shots;i++){
-        const spread = (i-(shots-1)/2)*0.1;
-        effects.push(new LightningEffect(this.x+this.width/2, this.y, angle+spread));
+        const spread = (i-(shots-1)/2)*(profile.spread || 0.08);
+        projectiles.push(new Projectile({
+          x: this.x+this.width/2,
+          y: this.y,
+          angle: angle+spread,
+          stats: profile
+        }));
       }
     }
-    for (let i=0;i<8;i++) particles.push(makeParticle(this.x+this.width/2, this.y, '255,220,150', 2));
-    cameraShake = Math.max(cameraShake,2);
+    for (let i=0;i<8;i++) particles.push(makeParticle(this.x+this.width/2, this.y, profile.color || '255,220,150', 2));
+    cameraShake = Math.max(cameraShake,2.2);
   }
   takeDamage(){ if (this.invuln>0) return; this.hp--; this.invuln=30; this.bonusShots=0; if (this.hp<=0) gameOver=true; }
   draw(){
+    const profile = this.cachedProfile || this.getWeaponProfile();
     ctx.save();
     ctx.translate(this.x, this.y);
     if (this.flip){ ctx.scale(-1,1); ctx.translate(-this.width, 0); }
     if (this.invuln%6<3){
-      const img = (mouse.down && this.cooldownTimer > weaponStats[this.weapon].cooldown/2) ? wizardShoot : wizardFly;
+      const img = (mouse.down && this.cooldownTimer > profile.cooldown/2) ? wizardShoot : wizardFly;
       ctx.drawImage(img, 0, -this.height/2, this.width, this.height);
     }
     ctx.restore();
     // HP UI
     ctx.fillStyle='red'; ctx.fillRect(20,20, this.hp*30, 10);
     ctx.strokeStyle='white'; ctx.strokeRect(20,20, 5*30, 10);
-  }
-}
 
-class Projectile{
-  constructor(x,y,angle,type){
-    this.x=x; this.y=y; this.type=type;
-    this.speed=weaponStats[type].speed;
-    this.vx=Math.cos(angle)*this.speed;
-    this.vy=Math.sin(angle)*this.speed;
-    this.size=6; this.life=60;
-    this.color = (type==='fire')?'255,120,0':(type==='ice')?'150,200,255':'255,255,150';
-  }
-  update(dt){
-    this.x+=this.vx*dt; this.y+=this.vy*dt; this.life-=dt;
-    const trail = makeParticle(this.x, this.y, this.color, 2);
-    trail.vx *= 0.2; trail.vy *= 0.2; trail.life = 20;
-    particles.push(trail);
-  }
-  draw(){
-    ctx.save(); ctx.globalCompositeOperation='lighter';
-    ctx.fillStyle=`rgba(${this.color},0.15)`; ctx.beginPath(); ctx.arc(this.x,this.y,this.size*2.4,0,Math.PI*2); ctx.fill();
-    ctx.fillStyle=`rgba(${this.color},1)`; ctx.beginPath(); ctx.arc(this.x,this.y,this.size,0,Math.PI*2); ctx.fill();
-    ctx.restore();
-  }
-}
-
-class LightningEffect{
-  constructor(x,y,angle){
-    this.x=x; this.y=y; this.angle=angle; this.life=6; this.hitApplied=false;
-    this.targets=findLightningTargets(this.x,this.y,this.angle);
-  }
-  update(dt){
-    if (!this.hitApplied){
-      this.targets.forEach((t,i)=>{
-        if (!t) return;
-        const dmg = i===0?2:1;
-        t.hp -= dmg;
-        spawnHitParticles(t.x+t.width/2, t.y+t.height/2, 'lightning');
-        if (t.hp<=0){
-          spawnExplosion(t.x+t.width/2, t.y+t.height/2);
-          dropCollectable(t.x,t.y);
-          enemies.splice(enemies.indexOf(t),1);
-          cameraShake=10;
-        }
-      });
-      sfxHit.currentTime=0; sfxHit.play();
-      this.hitApplied=true;
+    // Bomb UI
+    ctx.save();
+    ctx.translate(20, 40);
+    for(let i=0;i<this.bombs;i++){
+      ctx.fillStyle='rgba(255,180,255,0.85)';
+      ctx.beginPath(); ctx.arc(10 + i*18, 0, 6, 0, Math.PI*2); ctx.fill();
+      ctx.strokeStyle='rgba(255,255,255,0.6)'; ctx.stroke();
     }
-    this.life-=dt;
-  }
-  draw(){
-    if (this.targets.length===0) return;
-    ctx.save(); ctx.globalCompositeOperation='lighter';
-    ctx.strokeStyle='rgba(120,200,255,0.9)'; ctx.lineWidth=2;
-    ctx.beginPath(); ctx.moveTo(this.x,this.y);
-    this.targets.forEach(t=>{
-      if (!t) return;
-      const tx=t.x+t.width/2, ty=t.y+t.height/2;
-      const seg=6; for (let i=1;i<=seg;i++){
-        const p=i/seg;
-        const ix=this.x+(tx-this.x)*p + (Math.random()-0.5)*8;
-        const iy=this.y+(ty-this.y)*p + (Math.random()-0.5)*8;
-        ctx.lineTo(ix,iy);
-      }
-    });
-    ctx.stroke(); ctx.restore();
+    ctx.restore();
+
+    // Weapon info + power-ups
+    ctx.fillStyle='white'; ctx.font='16px sans-serif'; ctx.textAlign='left';
+    const tier = this.weaponLevels[this.weapon] ?? 0;
+    const levelLabel = tier < 0 ? 'Lv.?': `Lv.${Math.min(tier+1, weaponDefinitions[this.weapon].levels.length)}`;
+    ctx.fillText(`${profile.label} ${levelLabel}`, 20, 70);
+    if (this.powerUps.length>0){
+      ctx.font='14px sans-serif';
+      this.powerUps.forEach((p,i)=>{
+        const def = powerUpDefinitions[p.type];
+        const secs = Math.ceil(p.timer/60);
+        ctx.fillStyle='rgba(255,220,180,0.9)';
+        ctx.fillText(`${def?.label||'Glyph'} ${secs}s`, 20, 92 + i*16);
+      });
+    }
   }
 }
+
+  class Projectile{
+    constructor({x,y,angle,stats}){
+      this.x=x; this.y=y;
+      this.element = stats.element || 'default';
+      this.speed = stats.speed || 9;
+      this.damage = stats.damage || 1;
+      this.size = stats.size || 6;
+      this.life = stats.life || 70;
+      this.pierce = stats.pierce || 0;
+      this.aoeRadius = stats.aoeRadius || 0;
+      this.burnDuration = stats.burnDuration || 0;
+      this.burnDps = stats.burnDps || 0;
+      this.slowDuration = stats.slowDuration || 0;
+      this.chillFactor = stats.chillFactor || 0.5;
+      this.splinter = stats.splinter || 0;
+      this.vx=Math.cos(angle)*this.speed;
+      this.vy=Math.sin(angle)*this.speed;
+      this.color = stats.color || '255,255,150';
+      this.sourceStats = Object.assign({}, stats);
+    }
+    update(dt){
+      this.x+=this.vx*dt; this.y+=this.vy*dt; this.life-=dt;
+      const trail = makeParticle(this.x, this.y, this.color, 2);
+      trail.vx *= 0.2; trail.vy *= 0.2; trail.life = 20;
+      particles.push(trail);
+    }
+    applyHit(enemy){
+      enemy.hp -= this.damage;
+      const impact = {
+        remove: (--this.pierce) < 0,
+        element: this.element,
+        aoeRadius: this.aoeRadius,
+        damage: this.damage,
+        splinter: this.splinter,
+        stats: this.sourceStats
+      };
+      if (this.element==='fire'){
+        enemy.applyBurn(this.burnDuration, this.burnDps);
+      }
+      if (this.element==='ice') enemy.applyChill(this.slowDuration, this.chillFactor);
+      this.x += this.vx*0.1;
+      this.y += this.vy*0.1;
+      return impact;
+    }
+    draw(){
+      ctx.save(); ctx.globalCompositeOperation='lighter';
+      ctx.fillStyle=`rgba(${this.color},0.15)`; ctx.beginPath(); ctx.arc(this.x,this.y,this.size*2.4,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle=`rgba(${this.color},1)`; ctx.beginPath(); ctx.arc(this.x,this.y,this.size,0,Math.PI*2); ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  class LightningEffect{
+    constructor(x,y,angle,profile){
+      this.x=x; this.y=y; this.angle=angle; this.life=8; this.hitApplied=false;
+      this.profile = Object.assign({}, profile);
+      this.targets=findLightningTargets(this.x,this.y,this.angle, (profile.chain||2));
+      this.paths=this.targets.map(t=>t?this.buildPath(t.x+t.width/2, t.y+t.height/2):null);
+      this.forks=[];
+      if (profile.stormForks){
+        for(let i=0;i<profile.stormForks;i++){
+          const ang = angle + (Math.random()-0.5)*0.8;
+          const dist = 140 + Math.random()*120;
+          const tx = this.x + Math.cos(ang)*dist;
+          const ty = this.y + Math.sin(ang)*dist;
+          this.forks.push(this.buildPath(tx, ty, 5, 16));
+        }
+      }
+    }
+    buildPath(tx,ty,seg=6,jitter=10){
+      const pts=[];
+      for (let i=1;i<=seg;i++){
+        const p=i/seg;
+        const ix=this.x+(tx-this.x)*p + (Math.random()-0.5)*jitter;
+        const iy=this.y+(ty-this.y)*p + (Math.random()-0.5)*jitter;
+        pts.push({x:ix,y:iy});
+      }
+      return pts;
+    }
+    update(dt){
+      if (!this.hitApplied){
+        const falloff = this.profile.chainFalloff || 0.75;
+        this.targets.forEach((t,i)=>{
+          if (!t) return;
+          const dmg = (this.profile.damage || 2) * Math.pow(falloff, i);
+          t.hp -= dmg;
+          t.applyShock(this.profile.shockDuration || 30);
+          spawnHitParticles(t.x+t.width/2, t.y+t.height/2, 'lightning');
+          const idx=enemies.indexOf(t);
+          if (t.hp<=0 && idx>=0){
+            defeatEnemy(t, idx);
+          }
+        });
+        if (boss){
+          if (bossSigils.length>0){
+            let shattered=false;
+            for (let si=bossSigils.length-1; si>=0; si--){
+              const sig=bossSigils[si];
+              if (Math.hypot(sig.x - this.x, sig.y - this.y) <= 220){
+                const destroyed = sig.takeDamage(Math.round(this.profile.damage || 2));
+                if (destroyed){ bossSigils.splice(si,1); shattered = true; }
+              }
+            }
+            if (shattered && bossSigils.length===0){
+              boss.shieldActive=false;
+              floatTexts.push(new FloatText(window.innerWidth/2 - 110, 100, 'Shield Shattered!', '#ffe6ff'));
+            }
+          } else {
+            const bx=boss.x+boss.width/2, by=boss.y+boss.height/2;
+            const dist=Math.hypot(bx-this.x, by-this.y);
+            const ang=Math.atan2(by-this.y, bx-this.x);
+            const diff=Math.atan2(Math.sin(ang - this.angle), Math.cos(ang - this.angle));
+            if (dist<650 && Math.abs(diff)<0.4){
+              boss.hp -= (this.profile.damage||2.5)*1.4;
+              spawnHitParticles(bx, by, 'lightning');
+            }
+          }
+        }
+        sfxHit.currentTime=0; sfxHit.play();
+        cameraShake = Math.max(cameraShake, 6);
+        this.hitApplied=true;
+      }
+      this.life-=dt;
+    }
+    draw(){
+      ctx.save(); ctx.globalCompositeOperation='lighter';
+      ctx.strokeStyle='rgba(150,210,255,0.9)'; ctx.lineWidth=2.5;
+      ctx.beginPath(); ctx.moveTo(this.x,this.y);
+      this.paths.forEach(path=>{
+        if (!path) return;
+        path.forEach(pt=>ctx.lineTo(pt.x, pt.y));
+      });
+      ctx.stroke();
+      if (this.forks.length){
+        ctx.strokeStyle='rgba(180,220,255,0.6)'; ctx.lineWidth=1.5;
+        this.forks.forEach(path=>{
+          ctx.beginPath(); ctx.moveTo(this.x,this.y);
+          path.forEach(pt=>ctx.lineTo(pt.x, pt.y));
+          ctx.stroke();
+        });
+      }
+      ctx.restore();
+    }
+  }
+
+  class ArcaneBomb{
+    constructor(x,y,profile){
+      this.x=x; this.y=y; this.profile=Object.assign({}, profile);
+      this.life=50; this.fuse=16; this.radius=24; this.exploded=false;
+    }
+    explode(){
+      if (this.exploded) return;
+      this.exploded=true;
+      this.life=28;
+      spawnShockwave(this.x, this.y);
+      spawnHitParticles(this.x, this.y, 'bomb');
+      applyAoeDamage(this.x, this.y, 180, (this.profile.damage||2)*1.4, 'bomb');
+      if (boss){
+        if (bossSigils.length>0){
+          let shattered=false;
+          for (let si=bossSigils.length-1; si>=0; si--){
+            const sig=bossSigils[si];
+            if (Math.hypot(sig.x - this.x, sig.y - this.y) <= 240){
+              const destroyed = sig.takeDamage(Math.round((this.profile.damage||2.5)*1.6));
+              if (destroyed){ bossSigils.splice(si,1); shattered=true; }
+            }
+          }
+          if (shattered && bossSigils.length===0){
+            boss.shieldActive=false;
+            floatTexts.push(new FloatText(window.innerWidth/2 - 110, 100, 'Shield Shattered!', '#ffe6ff'));
+          }
+        } else {
+          const bx=boss.x+boss.width/2, by=boss.y+boss.height/2;
+          boss.hp -= (this.profile.damage||2.5)*4.5;
+          spawnHitParticles(bx, by, 'bomb');
+        }
+      }
+      cameraShake = Math.max(cameraShake, 18);
+    }
+    update(dt){
+      if (!this.exploded){
+        this.fuse -= dt;
+        this.radius = 24 + (16 - this.fuse)*1.5;
+        if (this.fuse<=0) this.explode();
+      } else {
+        this.radius += 12*dt;
+        this.life -= dt;
+      }
+    }
+    draw(){
+      ctx.save();
+      ctx.globalCompositeOperation='lighter';
+      ctx.strokeStyle=this.exploded?'rgba(255,160,255,0.8)':'rgba(200,150,255,0.6)';
+      ctx.lineWidth=this.exploded?4:2;
+      ctx.beginPath(); ctx.arc(this.x, this.y, this.radius, 0, Math.PI*2); ctx.stroke();
+      ctx.fillStyle=this.exploded?'rgba(255,150,255,0.25)':'rgba(200,170,255,0.15)';
+      ctx.beginPath(); ctx.arc(this.x, this.y, this.radius*0.6, 0, Math.PI*2); ctx.fill();
+      ctx.restore();
+    }
+  }
 
 class BossProjectile{
   constructor(x,y,tx,ty,opts={}){
@@ -516,6 +842,8 @@ class Boss{
     this.hp=200 + type*50; this.maxHp=this.hp;
     this.timer=0; this.anim=0; this.spiral=0;
     this.targetX = window.innerWidth - this.width - 80;
+    this.targetY = this.y;
+    this.moveTimer = 160;
     this.phase=1;
     this.phase2Triggered=false;
     this.phase3Triggered=false;
@@ -525,7 +853,45 @@ class Boss{
   }
   update(dt){
     this.timer+=dt; this.anim+=dt;
-    this.x += (this.targetX - this.x)*0.02*dt;
+    this.moveTimer -= dt;
+    if (this.moveTimer<=0){
+      this.moveTimer = 140 - this.phase*10 + Math.random()*120;
+      const minX = window.innerWidth*0.45;
+      const maxX = window.innerWidth - this.width - 60;
+      this.targetX = Math.min(maxX, Math.max(minX, this.targetX + (Math.random()*240 - 120)));
+      const minY = 40;
+      const maxY = window.innerHeight - this.height - 40;
+      this.targetY = Math.min(maxY, Math.max(minY, this.targetY + (Math.random()*260 - 130)));
+    }
+
+    let desiredX = this.targetX;
+    let desiredY = this.targetY;
+    if(this.type===0){
+      const wobble = 60 + this.phase*18;
+      desiredY += Math.sin(this.anim*(0.03 + this.phase*0.005)*60)*wobble;
+      desiredX += Math.cos(this.anim*0.012*60)*(24 + this.phase*8);
+    } else if(this.type===1){
+      const sway = 80 + this.phase*22;
+      desiredY += Math.sin(this.anim*(0.02 + this.phase*0.003)*60)*sway;
+      desiredX += Math.sin(this.anim*0.01*60)*(34 + this.phase*12);
+    } else if(this.type===2){
+      const drift = 70 + this.phase*24;
+      desiredY += Math.sin(this.anim*(0.04 + this.phase*0.008)*60)*drift;
+      desiredX += Math.cos(this.anim*(0.025 + this.phase*0.006)*60)*(40 + this.phase*15);
+      this.spiral += (0.2 + this.phase*0.05)*dt;
+    }
+
+    const minXBound = window.innerWidth*0.35;
+    const maxXBound = window.innerWidth - this.width - 40;
+    const minYBound = 20;
+    const maxYBound = window.innerHeight - this.height - 20;
+    desiredX = Math.max(minXBound, Math.min(maxXBound, desiredX));
+    desiredY = Math.max(minYBound, Math.min(maxYBound, desiredY));
+
+    this.x += (desiredX - this.x)*0.02*dt;
+    this.y += (desiredY - this.y)*0.02*dt;
+    this.y = Math.max(0, Math.min(window.innerHeight - this.height, this.y));
+
     const cx=this.x+this.width/2, cy=this.y+this.height/2;
     this.shieldPulse = this.shieldActive ? Math.min(1, this.shieldPulse + 0.04*dt) : Math.max(0, this.shieldPulse - 0.05*dt);
 
@@ -550,8 +916,6 @@ class Boss{
     }
 
     if(this.type===0){
-      const wobble = 2 + this.phase;
-      this.y += Math.sin(this.anim*(0.03 + this.phase*0.005)*60)*wobble*dt;
       const cooldown = this.phase===1?60:(this.phase===2?45:30);
       if(this.timer>=cooldown){
         const base=Math.atan2(player.y-cy, player.x-cx);
@@ -572,8 +936,6 @@ class Boss{
         this.timer=0;
       }
     } else if(this.type===1){
-      const sway = 3 + this.phase*1.5;
-      this.y += Math.sin(this.anim*(0.02 + this.phase*0.003)*60)*sway*dt;
       const cooldown = this.phase===1?150:(this.phase===2?120:90);
       if(this.timer>=cooldown){
         const burst = this.phase>=3?14:10;
@@ -591,9 +953,6 @@ class Boss{
         this.timer=0;
       }
     } else if(this.type===2){
-      const drift = 3 + this.phase;
-      this.y += Math.sin(this.anim*(0.04 + this.phase*0.008)*60)*drift*dt;
-      this.spiral += (0.2 + this.phase*0.05)*dt;
       const cooldown = this.phase===1?15:(this.phase===2?10:6);
       if(this.timer>=cooldown){
         const ang=this.spiral;
@@ -610,7 +969,7 @@ class Boss{
         this.timer=0;
       }
     }
-    this.y = Math.max(0, Math.min(window.innerHeight - this.height, this.y));
+
     if (this.phase>=3){
       this.laserTimer -= dt;
       if (this.laserTimer<=0){
@@ -666,10 +1025,25 @@ class Enemy{
     this.waveAmp    = 10 + Math.random()*110; // 10–120px amplitude
 
     this.slowTimer=0;
+    this.chillFactor=1;
+    this.burnTimer=0;
+    this.burnDps=0;
+    this.shockTimer=0;
+    this.statusPulse=0;
   }
   update(dt){
-    const spd = this.slowTimer>0 ? this.baseSpeed*0.5 : this.baseSpeed;
-    if (this.slowTimer>0) this.slowTimer-=dt;
+    let speedMult = 1;
+    if (this.slowTimer>0){
+      this.slowTimer-=dt;
+      speedMult *= this.chillFactor || 0.5;
+      if (this.slowTimer<=0) this.chillFactor=1;
+    }
+    if (this.shockTimer>0){
+      this.shockTimer-=dt;
+      speedMult *= 0.35;
+      if (Math.random()<0.12*dt) particles.push(makeParticle(this.x+this.width/2, this.y+this.height/2, '120,200,255', 3));
+    }
+    const spd = this.baseSpeed * speedMult;
     this.x -= spd*dt;
 
     // drift baseline up/down
@@ -684,19 +1058,78 @@ class Enemy{
 
     // Stay in vertical bounds
     this.y = Math.max(0, Math.min(window.innerHeight - this.height, this.y));
+
+    if (this.burnTimer>0){
+      this.burnTimer-=dt;
+      this.hp -= this.burnDps * dt;
+      this.statusPulse = Math.min(1, this.statusPulse + 0.05*dt);
+      if (Math.random()<0.18*dt) particles.push(makeParticle(this.x+this.width/2, this.y+this.height/2, '255,120,0', 4));
+      if (this.burnTimer<=0) this.burnDps=0;
+    } else {
+      this.statusPulse = Math.max(0, this.statusPulse - 0.05*dt);
+    }
   }
-  draw(){ ctx.drawImage(this.sprite, this.x, this.y, this.width, this.height); }
+  draw(){
+    ctx.drawImage(this.sprite, this.x, this.y, this.width, this.height);
+    if (this.statusPulse>0){
+      ctx.save();
+      ctx.globalAlpha = Math.min(0.5, this.statusPulse*0.5);
+      ctx.fillStyle='rgba(255,120,40,1)';
+      if (this.shockTimer>0) ctx.fillStyle='rgba(120,220,255,0.8)';
+      else if (this.slowTimer>0) ctx.fillStyle='rgba(180,220,255,0.6)';
+      ctx.fillRect(this.x, this.y, this.width, this.height);
+      ctx.restore();
+    }
+  }
+  applyBurn(duration, dps){
+    this.burnTimer = Math.max(this.burnTimer, duration||0);
+    this.burnDps = Math.max(this.burnDps, dps||0);
+  }
+  applyChill(duration, factor){
+    this.slowTimer = Math.max(this.slowTimer, duration||0);
+    this.chillFactor = Math.min(this.chillFactor, factor||0.5);
+    this.statusPulse = Math.max(this.statusPulse, 0.4);
+  }
+  applyShock(duration){
+    this.shockTimer = Math.max(this.shockTimer, duration||0);
+    this.statusPulse = Math.max(this.statusPulse, 0.6);
+  }
 }
 
-class Collectable{
-  constructor(x,y,type){ this.x=x; this.y=y; this.type=type; this.size=24; this.floatOffset=Math.random()*Math.PI*2; }
-  update(dt){ this.x -= 2*dt; this.floatOffset += 0.05*dt; }
-  draw(){
-    const dy = Math.sin(this.floatOffset)*4;
-    if (this.type==='heart') ctx.drawImage(heartSprite, this.x, this.y+dy, this.size, this.size);
-    else { ctx.save(); ctx.filter=`hue-rotate(${hueMap[this.type]}deg)`; ctx.drawImage(orbSprite, this.x, this.y+dy, this.size, this.size); ctx.restore(); }
+  class Collectable{
+    constructor(x,y,type){
+      this.x=x; this.y=y; this.type=type; this.size=24; this.floatOffset=Math.random()*Math.PI*2;
+      this.visual = collectableVisuals[type] || { sprite: orbSprite, hue: 0 };
+      this.spin = (Math.random()*0.02 + 0.01) * (Math.random()<0.5?-1:1);
+      this.rotation = Math.random()*Math.PI*2;
+    }
+    update(dt){
+      this.x -= 2*dt;
+      this.floatOffset += 0.05*dt;
+      this.rotation += this.spin*dt;
+    }
+    draw(){
+      const dy = Math.sin(this.floatOffset)*4;
+      const sprite = this.visual.sprite || orbSprite;
+      const hue = this.visual.hue;
+      const glow = this.visual.glow;
+      const px = this.x + this.size/2;
+      const py = this.y + dy + this.size/2;
+      ctx.save();
+      ctx.translate(px, py);
+      if (hue !== undefined) ctx.filter = `hue-rotate(${hue}deg)`;
+      if (sprite!==heartSprite) ctx.rotate(this.rotation);
+      ctx.drawImage(sprite, -this.size/2, -this.size/2, this.size, this.size);
+      ctx.restore();
+      if (glow){
+        ctx.save();
+        ctx.globalCompositeOperation='lighter';
+        ctx.fillStyle=glow;
+        ctx.beginPath(); ctx.arc(px, py, this.size*0.6, 0, Math.PI*2); ctx.fill();
+        ctx.restore();
+      }
+    }
   }
-}
 
 class FloatText{
   constructor(x,y,text,color){ this.x=x; this.y=y; this.text=text; this.color=color; this.life=40; }
@@ -712,10 +1145,11 @@ function spawnBlood(x,y){
   for(let i=0;i<120;i++) particles.push(makeParticle(x,y,'150,0,0',6));
 }
 function spawnHitParticles(x,y,type='default'){
-  let color='255,0,0', size=4;
+  let color='200,160,255', size=4;
   if (type==='fire'){ color='255,120,0'; size=5; }
   if (type==='ice'){ color='160,220,255'; size=3; }
   if (type==='lightning'){ color='120,200,255'; size=3; }
+  if (type==='bomb'){ color='255,150,255'; size=6; }
   for(let i=0;i<32;i++) particles.push(makeParticle(x,y,color,size));
 }
 function spawnShockwave(x,y){
@@ -808,20 +1242,82 @@ function drawWeather(){
 
 /* ========= Helpers ========= */
 function perfNow(){ return (performance || Date).now ? (performance.now()/1000) : (Date.now()/1000); }
-function findLightningTargets(px,py,angle){
+function findLightningTargets(px,py,angle,count=2){
+  const cos=Math.cos(angle), sin=Math.sin(angle);
+  const maxDist=600;
   return enemies
-    .map(e=>({e, d: Math.hypot(e.x-px, e.y-py)}))
-    .filter(o=>o.d<500)
-    .sort((a,b)=>a.d-b.d)
-    .slice(0,2)
+    .map(e=>{
+      const ex=e.x+e.width/2, ey=e.y+e.height/2;
+      const dx=ex-px, dy=ey-py;
+      const dist=Math.hypot(dx,dy);
+      const dir = dist>0 ? (dx*cos + dy*sin)/dist : 0;
+      return { e, dist, dir };
+    })
+    .filter(o=>o.dist<maxDist && o.dir>-0.2)
+    .sort((a,b)=>a.dist-b.dist)
+    .slice(0,count)
     .map(o=>o.e);
 }
 function dropCollectable(x,y){
   const roll=Math.random();
-  if (roll<0.2) collectables.push(new Collectable(x,y,'heart'));
-  else if (roll<0.6){
+  if (roll<0.18) collectables.push(new Collectable(x,y,'heart'));
+  else if (roll<0.55){
     const types=['fire','lightning','ice'];
     collectables.push(new Collectable(x,y, types[Math.floor(Math.random()*types.length)]));
+  } else if (roll<0.82){
+    const boosts=['rapid','fury','focus'];
+    collectables.push(new Collectable(x,y, boosts[Math.floor(Math.random()*boosts.length)]));
+  } else if (roll<0.92){
+    collectables.push(new Collectable(x,y,'bomb'));
+  }
+}
+
+function defeatEnemy(enemy, index){
+  if (!enemy) return;
+  const cx=enemy.x+enemy.width/2;
+  const cy=enemy.y+enemy.height/2;
+  spawnExplosion(cx, cy);
+  dropCollectable(enemy.x, enemy.y);
+  enemies.splice(index,1);
+  killCount++;
+  if(killCount>=20 && !boss) spawnBoss();
+  cameraShake = Math.max(cameraShake, 10);
+}
+
+function applyAoeDamage(x,y,radius,damage,element='default',ignore){
+  if (radius<=0 || damage<=0) return;
+  const toRemove=[];
+  for (let i=enemies.length-1;i>=0;i--){
+    const enemy=enemies[i];
+    if (!enemy || enemy===ignore) continue;
+    const ex=enemy.x+enemy.width/2;
+    const ey=enemy.y+enemy.height/2;
+    if (Math.hypot(ex-x, ey-y) <= radius){
+      enemy.hp -= damage;
+      if (element==='fire') enemy.applyBurn(90, 0.04);
+      if (element==='ice') enemy.applyChill(90, 0.5);
+      spawnHitParticles(ex, ey, element);
+      if (enemy.hp<=0) toRemove.push(i);
+    }
+  }
+  toRemove.sort((a,b)=>b-a).forEach(idx=> defeatEnemy(enemies[idx], idx));
+}
+
+function spawnSplinters(x,y,count,stats){
+  if (!count || !stats) return;
+  const baseAngle = Math.random()*Math.PI*2;
+  for(let i=0;i<count;i++){
+    const ang = baseAngle + (i/count)*Math.PI*2;
+    const shardStats = Object.assign({}, stats, {
+      speed: (stats.speed||8)*0.9,
+      damage: Math.max(0.4, (stats.damage||1)*0.65),
+      size: Math.max(4, (stats.size||6)*0.6),
+      life: 40,
+      pierce: 0,
+      aoeRadius: 0,
+      splinter: 0
+    });
+    projectiles.push(new Projectile({ x, y, angle: ang, stats: shardStats }));
   }
 }
 
@@ -911,38 +1407,34 @@ function update(dt){
   for (let i=projectiles.length-1;i>=0;i--){ const pj=projectiles[i]; pj.update(dt); if (pj.life<=0) projectiles.splice(i,1); }
   for (let i=effects.length-1;i>=0;i--){ const ef=effects[i]; ef.update(dt); if (ef.life<=0) effects.splice(i,1); }
 
-  for (let ei=enemies.length-1; ei>=0; ei--){
-    const e=enemies[ei]; e.update(dt);
-    if (e.x + e.width < 0) { enemies.splice(ei,1); continue; }
+    for (let ei=enemies.length-1; ei>=0; ei--){
+      const e=enemies[ei];
+      e.update(dt);
+      if (e.hp<=0){ defeatEnemy(e, ei); continue; }
+      if (e.x + e.width < 0) { enemies.splice(ei,1); continue; }
 
-    if (player.x < e.x+e.width && player.x+player.width > e.x && player.y < e.y+e.height && player.y+player.height > e.y){
-      player.takeDamage(); enemies.splice(ei,1); continue;
-    }
+      if (player.x < e.x+e.width && player.x+player.width > e.x && player.y < e.y+e.height && player.y+player.height > e.y){
+        player.takeDamage(); enemies.splice(ei,1); continue;
+      }
 
-    for (let pi=projectiles.length-1; pi>=0; pi--){
-      const p=projectiles[pi];
-      if (p.x < e.x + e.width && p.x > e.x && p.y > e.y && p.y < e.y + e.height){
-        e.hp -= weaponStats[p.type].damage;
-        if (p.type==='ice'){ e.slowTimer=60; spawnHitParticles(p.x,p.y,'ice'); }
-        else if (p.type==='fire'){
-          spawnHitParticles(p.x,p.y,'fire');
-          enemies.forEach(o=>{ if (o!==e && Math.hypot(o.x-e.x, o.y-e.y)<60) o.hp--; });
-        } else { spawnHitParticles(p.x,p.y,'default'); }
-        projectiles.splice(pi,1);
-        sfxHit.currentTime=0; sfxHit.play();
-
-        if (e.hp<=0){
-          spawnExplosion(e.x+e.width/2, e.y+e.height/2);
-          dropCollectable(e.x,e.y);
-          enemies.splice(ei,1);
-          killCount++;
-          if(killCount>=20 && !boss) spawnBoss();
-          cameraShake=10;
-          break;
+      for (let pi=projectiles.length-1; pi>=0; pi--){
+        const p=projectiles[pi];
+        if (p.x < e.x + e.width && p.x > e.x && p.y > e.y && p.y < e.y + e.height){
+          const impact = p.applyHit(e);
+          spawnHitParticles(p.x,p.y, impact.element || 'default');
+          if (impact.aoeRadius>0) applyAoeDamage(p.x, p.y, impact.aoeRadius, impact.damage*0.6, impact.element, e);
+          sfxHit.currentTime=0; sfxHit.play();
+          if (e.hp<=0){
+            if (impact.splinter) spawnSplinters(e.x+e.width/2, e.y+e.height/2, impact.splinter, impact.stats);
+            defeatEnemy(e, ei);
+            break;
+          }
+          if (impact.remove){
+            projectiles.splice(pi,1);
+          }
         }
       }
     }
-  }
 
   if(boss){
     boss.shieldActive = bossSigils.length>0;
@@ -955,46 +1447,58 @@ function update(dt){
     if (player.x < boss.x+boss.width && player.x+player.width > boss.x && player.y < boss.y+boss.height && player.y+player.height > boss.y){
       player.takeDamage();
     }
-    for (let pi=projectiles.length-1; pi>=0; pi--){
-      const p=projectiles[pi];
-      let consumed=false;
-      for (let si=bossSigils.length-1; si>=0; si--){
-        const sig=bossSigils[si];
-        const dist=Math.hypot((p.x||0) - sig.x, (p.y||0) - sig.y);
-        if (dist < sig.size/2 + 6){
-          const dmg = (weaponStats[p.type]?.damage) || 1;
-          const destroyed = sig.takeDamage(dmg);
-          projectiles.splice(pi,1);
-          sfxHit.currentTime=0; sfxHit.play();
-          if (destroyed){
-            bossSigils.splice(si,1);
-            if (bossSigils.length===0){
-              boss.shieldActive=false;
-              floatTexts.push(new FloatText(window.innerWidth/2 - 110, 100, 'Shield Shattered!', '#ffe6ff'));
-              cameraShake = Math.max(cameraShake, 12);
+      for (let pi=projectiles.length-1; pi>=0; pi--){
+        const p=projectiles[pi];
+        let consumed=false;
+        for (let si=bossSigils.length-1; si>=0; si--){
+          const sig=bossSigils[si];
+          const dist=Math.hypot((p.x||0) - sig.x, (p.y||0) - sig.y);
+          if (dist < sig.size/2 + 6){
+            const dmg = Math.max(1, Math.round(p.damage || p.sourceStats?.damage || 1));
+            const destroyed = sig.takeDamage(dmg);
+            if (typeof p.pierce !== 'number') p.pierce = 0;
+            p.pierce -= 1;
+            const remove = p.pierce < 0;
+            if (remove) projectiles.splice(pi,1);
+            else { p.x += (p.vx||0)*0.1; p.y += (p.vy||0)*0.1; }
+            consumed = true;
+            sfxHit.currentTime=0; sfxHit.play();
+            if (destroyed){
+              bossSigils.splice(si,1);
+              if (bossSigils.length===0){
+                boss.shieldActive=false;
+                floatTexts.push(new FloatText(window.innerWidth/2 - 110, 100, 'Shield Shattered!', '#ffe6ff'));
+                cameraShake = Math.max(cameraShake, 12);
+              }
             }
+            break;
           }
-          consumed=true;
-          break;
         }
-      }
-      if (consumed) continue;
-      if (p.x < boss.x + boss.width && p.x > boss.x && p.y > boss.y && p.y < boss.y + boss.height){
-        if (bossSigils.length>0){
-          spawnHitParticles(p.x,p.y,'lightning');
+        if (consumed) continue;
+        if (p.x < boss.x + boss.width && p.x > boss.x && p.y > boss.y && p.y < boss.y + boss.height){
+          if (bossSigils.length>0){
+            spawnHitParticles(p.x,p.y,'lightning');
+            sfxHit.currentTime=0; sfxHit.play();
+            if (typeof p.pierce !== 'number') p.pierce = 0;
+            p.pierce -= 1;
+            if (p.pierce < 0) projectiles.splice(pi,1);
+            else { p.x += (p.vx||0)*0.1; p.y += (p.vy||0)*0.1; }
+            continue;
+          }
+          const dmg = p.damage || p.sourceStats?.damage || 1;
+          boss.hp -= dmg;
+          spawnHitParticles(p.x,p.y,'default');
           sfxHit.currentTime=0; sfxHit.play();
-          projectiles.splice(pi,1);
-          continue;
-        }
-        boss.hp -= weaponStats[p.type].damage;
-        spawnHitParticles(p.x,p.y,'default');
-        projectiles.splice(pi,1);
-        if (boss.hp<=0){
-          const bx=boss.x+boss.width/2, by=boss.y+boss.height/2;
-          spawnExplosion(bx, by);
-          spawnBlood(bx, by);
-          spawnShockwave(bx, by);
-          player.bonusShots++;
+          if (typeof p.pierce !== 'number') p.pierce = 0;
+          p.pierce -= 1;
+          if (p.pierce < 0) projectiles.splice(pi,1);
+          else { p.x += (p.vx||0)*0.1; p.y += (p.vy||0)*0.1; }
+          if (boss.hp<=0){
+            const bx=boss.x+boss.width/2, by=boss.y+boss.height/2;
+            spawnExplosion(bx, by);
+            spawnBlood(bx, by);
+            spawnShockwave(bx, by);
+            player.bonusShots++;
           boss=null; bossSigils=[]; bossHazards=[];
           bossSpawnTimer = 60*60 + Math.random()*60*60; setWeather(); weatherParticles=[]; cameraShake=20;
           break;
@@ -1021,15 +1525,17 @@ function update(dt){
     if (h.done) bossHazards.splice(hi,1);
   }
 
-  for (let ci=collectables.length-1; ci>=0; ci--){
-    const c=collectables[ci]; c.update(dt);
-    if (player.x < c.x+c.size && player.x+player.width > c.x && player.y < c.y+c.size && player.y+player.height > c.y){
-      if (c.type==='heart'){ if (player.hp<5) player.hp++; }
-      else { player.weapon = c.type; bgHueTimer = 120; }
-      sfxPickup.currentTime=0; sfxPickup.play();
-      collectables.splice(ci,1);
+    for (let ci=collectables.length-1; ci>=0; ci--){
+      const c=collectables[ci]; c.update(dt);
+      if (player.x < c.x+c.size && player.x+player.width > c.x && player.y < c.y+c.size && player.y+player.height > c.y){
+        if (c.type==='heart'){ if (player.hp<5) player.hp++; }
+        else if (weaponDefinitions[c.type]){ player.upgradeWeapon(c.type); bgHueTimer = 140; }
+        else if (powerUpDefinitions[c.type]){ player.applyPowerUp(c.type); bgHueTimer = Math.max(bgHueTimer, 90); }
+        else if (c.type==='bomb'){ player.bombs = Math.min(player.bombs+1, 5); floatTexts.push(new FloatText(player.x-20, player.y-80, 'Bomb Ready', '#ffb0ff')); }
+        sfxPickup.currentTime=0; sfxPickup.play();
+        collectables.splice(ci,1);
+      }
     }
-  }
 
   if (cameraShake>0) cameraShake-=dt;
 }
