@@ -149,7 +149,9 @@ let started=false, gameOver=false, cameraShake=0;
 let bgHue=0, bgHueTimer=0;
 let dayHue=0, worldBrightness=1, timeOfDay=0, dayCycle=120*60;
 let weather='clear', weatherTimer=0, weatherParticles=[], lightningFlash=0;
-let player, projectiles, enemies, particles, collectables, effects, floatTexts, enemySpawnTimer, boss, bossProjectiles, bossSpawnTimer, killCount;
+let player, projectiles, enemies, particles, collectables, effects, floatTexts, enemySpawnTimer, boss, bossProjectiles, bossSigils, bossHazards, bossSpawnTimer, killCount;
+bossSigils = [];
+bossHazards = [];
 let lastTime = 0, frameDt = 1;
 
 
@@ -183,6 +185,13 @@ function setWeather(){
   const types=['clear','rain','snow','sand','wind'];
   weather = types[Math.floor(Math.random()*types.length)];
   weatherTimer = 600 + Math.random()*1200;
+}
+
+function setTempestWeather(){
+  weather = 'tempest';
+  weatherTimer = 900;
+  weatherParticles = [];
+  lightningFlash = 10;
 }
 
 /* ========= Classes ========= */
@@ -352,16 +361,150 @@ class LightningEffect{
 }
 
 class BossProjectile{
-  constructor(x,y,tx,ty){
+  constructor(x,y,tx,ty,opts={}){
     this.x=x; this.y=y;
+    const speed = opts.speed || 4;
     const ang=Math.atan2(ty-y, tx-x);
-    this.vx=Math.cos(ang)*4; this.vy=Math.sin(ang)*4;
-    this.size=8;
+    this.vx=Math.cos(ang)*speed; this.vy=Math.sin(ang)*speed;
+    this.size=opts.size || 8;
+    this.color=opts.color || 'rgba(255,50,50,1)';
+    this.seek=opts.seek || 0;
+    this.wobble=opts.wobble || 0;
+    this.time=0;
   }
 
-  update(dt){ this.x+=this.vx*dt; this.y+=this.vy*dt; }
+  update(dt){
+    this.time += dt;
+    if (this.seek && player){
+      const ang = Math.atan2(player.y - this.y, player.x - this.x);
+      this.vx += Math.cos(ang) * this.seek * 0.002 * dt;
+      this.vy += Math.sin(ang) * this.seek * 0.002 * dt;
+    }
+    if (this.wobble){
+      const mag = Math.hypot(this.vx,this.vy);
+      const wob = Math.sin(this.time * 0.1 * this.wobble) * 0.2;
+      const ang = Math.atan2(this.vy,this.vx) + wob * dt;
+      this.vx = Math.cos(ang) * mag;
+      this.vy = Math.sin(ang) * mag;
+    }
+    this.x+=this.vx*dt; this.y+=this.vy*dt;
+  }
 
-  draw(){ ctx.fillStyle='rgba(255,50,50,1)'; ctx.beginPath(); ctx.arc(this.x,this.y,this.size,0,Math.PI*2); ctx.fill(); }
+  draw(){
+    ctx.save();
+    ctx.fillStyle=this.color;
+    ctx.beginPath(); ctx.arc(this.x,this.y,this.size,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+  }
+}
+
+class BossSigil{
+  constructor(boss,angle){
+    this.boss=boss;
+    this.angle=angle;
+    this.radius=Math.max(boss.width,boss.height)*0.55 + 70;
+    this.size=52;
+    this.hp=10;
+    this.spin=0.01 + Math.random()*0.02;
+    this.flash=0;
+  }
+  update(dt){
+    if (!this.boss) return;
+    this.angle += this.spin*dt;
+    const cx=this.boss.x+this.boss.width/2;
+    const cy=this.boss.y+this.boss.height/2;
+    this.x = cx + Math.cos(this.angle)*this.radius;
+    this.y = cy + Math.sin(this.angle)*this.radius;
+    if (this.flash>0) this.flash-=dt;
+  }
+  takeDamage(dmg){
+    this.hp -= dmg;
+    this.flash=12;
+    spawnHitParticles(this.x,this.y,'lightning');
+    if (this.hp<=0){
+      spawnExplosion(this.x,this.y);
+      return true;
+    }
+    return false;
+  }
+  draw(){
+    if (!this.x && !this.y) return;
+    ctx.save();
+    ctx.translate(this.x,this.y);
+    const pulse = 1 + Math.sin(perfNow()*3 + this.angle)*0.15;
+    ctx.scale(pulse,pulse);
+    if (this.flash>0){
+      ctx.globalAlpha = Math.max(0.2, Math.min(1, this.flash/12));
+    } else {
+      ctx.globalAlpha = 0.8;
+    }
+    ctx.globalCompositeOperation='lighter';
+    ctx.fillStyle='rgba(120,200,255,0.5)';
+    ctx.beginPath(); ctx.arc(0,0,this.size/2,0,Math.PI*2); ctx.fill();
+    ctx.globalCompositeOperation='source-over';
+    ctx.globalAlpha=1;
+    ctx.strokeStyle='rgba(255,255,255,0.85)';
+    ctx.lineWidth=3;
+    ctx.beginPath(); ctx.arc(0,0,this.size/2+6,0,Math.PI*2); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+class BossLaser{
+  constructor(orientation,pos){
+    this.orientation=orientation;
+    this.pos=pos;
+    this.warning=90;
+    this.duration=70;
+    this.timer=0;
+    this.active=false;
+    this.done=false;
+    this.width=orientation==='horizontal'?120:120;
+  }
+  update(dt){
+    this.timer += dt;
+    if (!this.active){
+      if (this.timer >= this.warning){
+        this.active=true;
+        this.timer=0;
+        cameraShake = Math.max(cameraShake, 8);
+      }
+    } else if (this.timer >= this.duration){
+      this.done=true;
+    }
+  }
+  hitPlayer(p){
+    if (!this.active) return false;
+    const half=this.width/2;
+    if (this.orientation==='horizontal'){
+      return p.y < this.pos + half && p.y + p.height > this.pos - half;
+    }
+    return p.x < this.pos + half && p.x + p.width > this.pos - half;
+  }
+  draw(){
+    const half=this.width/2;
+    const w=window.innerWidth, h=window.innerHeight;
+    ctx.save();
+    if (!this.active){
+      ctx.fillStyle='rgba(120,200,255,0.18)';
+      ctx.strokeStyle='rgba(255,255,255,0.4)';
+      ctx.setLineDash([12,12]);
+      ctx.lineWidth=2;
+    } else {
+      ctx.globalCompositeOperation='lighter';
+      ctx.fillStyle='rgba(255,90,160,0.55)';
+      ctx.shadowColor='rgba(255,120,220,0.9)';
+      ctx.shadowBlur=30;
+    }
+    if (this.orientation==='horizontal'){
+      ctx.fillRect(0, this.pos - half, w, this.width);
+      if (!this.active) ctx.strokeRect(0, this.pos - half, w, this.width);
+    } else {
+      ctx.fillRect(this.pos - half, 0, this.width, h);
+      if (!this.active) ctx.strokeRect(this.pos - half, 0, this.width, h);
+    }
+    ctx.restore();
+  }
 }
 
 class Boss{
@@ -373,46 +516,109 @@ class Boss{
     this.hp=200 + type*50; this.maxHp=this.hp;
     this.timer=0; this.anim=0; this.spiral=0;
     this.targetX = window.innerWidth - this.width - 80;
+    this.phase=1;
+    this.phase2Triggered=false;
+    this.phase3Triggered=false;
+    this.shieldPulse=0;
+    this.shieldActive=false;
+    this.laserTimer=240;
   }
   update(dt){
     this.timer+=dt; this.anim+=dt;
     this.x += (this.targetX - this.x)*0.02*dt;
     const cx=this.x+this.width/2, cy=this.y+this.height/2;
+    this.shieldPulse = this.shieldActive ? Math.min(1, this.shieldPulse + 0.04*dt) : Math.max(0, this.shieldPulse - 0.05*dt);
+
+    if (!this.phase2Triggered && this.hp <= this.maxHp*0.7){
+      this.phase = 2;
+      this.phase2Triggered = true;
+      summonBossSigils(this);
+      floatTexts.push(new FloatText(window.innerWidth/2 - 90, 80, 'Arcane Ward!', '#7fd9ff'));
+      cameraShake = Math.max(cameraShake, 8);
+      bgHueTimer = Math.max(bgHueTimer, 240);
+    }
+
+    if (!this.phase3Triggered && this.hp <= this.maxHp*0.4){
+      this.phase = 3;
+      this.phase3Triggered = true;
+      this.laserTimer = 90;
+      floatTexts.push(new FloatText(window.innerWidth/2 - 110, 120, 'Tempest Fury!', '#ff96d8'));
+      cameraShake = Math.max(cameraShake, 14);
+      spawnShockwave(cx, cy);
+      summonBossSigils(this);
+      setTempestWeather();
+    }
+
     if(this.type===0){
-      this.y += Math.sin(this.anim*0.03*60)*2*dt;
-      if(this.timer>=60){
+      const wobble = 2 + this.phase;
+      this.y += Math.sin(this.anim*(0.03 + this.phase*0.005)*60)*wobble*dt;
+      const cooldown = this.phase===1?60:(this.phase===2?45:30);
+      if(this.timer>=cooldown){
         const base=Math.atan2(player.y-cy, player.x-cx);
         for(let i=-2;i<=2;i++){
           const ang=base+i*0.2;
           const tx=cx+Math.cos(ang)*1000;
           const ty=cy+Math.sin(ang)*1000;
-          bossProjectiles.push(new BossProjectile(cx,cy,tx,ty));
+          const opts = { speed: 4 + this.phase*0.8, color: i===0?'rgba(255,180,120,1)':'rgba(255,80,80,1)' };
+          if (this.phase>=3 && i===0) opts.seek = 5;
+          bossProjectiles.push(new BossProjectile(cx,cy,tx,ty,opts));
+        }
+        if (this.phase>=2){
+          const ang = base + (Math.random()-0.5)*0.6;
+          const tx=cx+Math.cos(ang)*1000;
+          const ty=cy+Math.sin(ang)*1000;
+          bossProjectiles.push(new BossProjectile(cx,cy,tx,ty,{speed:6,color:'rgba(180,220,255,0.95)',seek:this.phase===3?6:0}));
         }
         this.timer=0;
       }
     } else if(this.type===1){
-      this.y += Math.sin(this.anim*0.02*60)*3*dt;
-      if(this.timer>=150){
-        for(let i=0;i<10;i++){
-          const ang=(i/10)*Math.PI*2;
+      const sway = 3 + this.phase*1.5;
+      this.y += Math.sin(this.anim*(0.02 + this.phase*0.003)*60)*sway*dt;
+      const cooldown = this.phase===1?150:(this.phase===2?120:90);
+      if(this.timer>=cooldown){
+        const burst = this.phase>=3?14:10;
+        for(let i=0;i<burst;i++){
+          const ang=(i/burst)*Math.PI*2;
           const tx=cx+Math.cos(ang)*1000;
           const ty=cy+Math.sin(ang)*1000;
-          bossProjectiles.push(new BossProjectile(cx,cy,tx,ty));
+          const opts = { speed: 3.5 + this.phase*0.6, color:'rgba(255,160,90,0.95)' };
+          bossProjectiles.push(new BossProjectile(cx,cy,tx,ty,opts));
+        }
+        if (this.phase>=2) spawnBossMinions(this, this.phase===3?3:2);
+        if (this.phase===3){
+          bossProjectiles.push(new BossProjectile(cx,cy,player.x,player.y,{speed:5.5,color:'rgba(255,220,120,0.9)',seek:4}));
         }
         this.timer=0;
       }
     } else if(this.type===2){
-      this.y += Math.sin(this.anim*0.04*60)*3*dt;
-      this.spiral += 0.2*dt;
-      if(this.timer>=15){
+      const drift = 3 + this.phase;
+      this.y += Math.sin(this.anim*(0.04 + this.phase*0.008)*60)*drift*dt;
+      this.spiral += (0.2 + this.phase*0.05)*dt;
+      const cooldown = this.phase===1?15:(this.phase===2?10:6);
+      if(this.timer>=cooldown){
         const ang=this.spiral;
         const tx=cx+Math.cos(ang)*1000;
         const ty=cy+Math.sin(ang)*1000;
-        bossProjectiles.push(new BossProjectile(cx,cy,tx,ty));
+        const opts = { speed: 4 + this.phase*0.9, color:'rgba(180,130,255,0.95)', wobble:this.phase>=2?1.5:0 };
+        bossProjectiles.push(new BossProjectile(cx,cy,tx,ty,opts));
+        if (this.phase>=3){
+          const ang2 = this.spiral + Math.PI;
+          const tx2=cx+Math.cos(ang2)*1000;
+          const ty2=cy+Math.sin(ang2)*1000;
+          bossProjectiles.push(new BossProjectile(cx,cy,tx2,ty2,{speed:4.5,color:'rgba(120,200,255,0.9)',wobble:2.5}));
+        }
         this.timer=0;
       }
     }
     this.y = Math.max(0, Math.min(window.innerHeight - this.height, this.y));
+    if (this.phase>=3){
+      this.laserTimer -= dt;
+      if (this.laserTimer<=0){
+        spawnBossLaser(Math.random()<0.5?'horizontal':'vertical');
+        if (Math.random()<0.35) spawnBossLaser(Math.random()<0.5?'horizontal':'vertical');
+        this.laserTimer = 220 - this.phase*40 + Math.random()*80;
+      }
+    }
   }
   draw(){
     ctx.drawImage(this.sprite, this.x, this.y, this.width, this.height);
@@ -426,6 +632,16 @@ class Boss{
     ctx.fillStyle='white'; ctx.font='16px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
     ctx.fillText(this.hp, this.x+barW/2, this.y-barH-9);
     ctx.restore();
+    if (this.shieldPulse>0){
+      const cx=this.x+this.width/2, cy=this.y+this.height/2;
+      const rad=Math.max(this.width,this.height)*0.6 + Math.sin(perfNow()*5)*6*this.shieldPulse;
+      ctx.save();
+      ctx.globalCompositeOperation='lighter';
+      ctx.lineWidth=8*this.shieldPulse;
+      ctx.strokeStyle=`rgba(120,200,255,${0.5*this.shieldPulse})`;
+      ctx.beginPath(); ctx.arc(cx,cy,rad,0,Math.PI*2); ctx.stroke();
+      ctx.restore();
+    }
   }
 }
 
@@ -502,6 +718,18 @@ function spawnHitParticles(x,y,type='default'){
   if (type==='lightning'){ color='120,200,255'; size=3; }
   for(let i=0;i<32;i++) particles.push(makeParticle(x,y,color,size));
 }
+function spawnShockwave(x,y){
+  const ring=48;
+  for(let i=0;i<ring;i++){
+    const ang=(i/ring)*Math.PI*2;
+    const speed=4 + Math.random()*2;
+    const p=makeParticle(x,y,'220,220,255',4);
+    p.vx = Math.cos(ang)*speed;
+    p.vy = Math.sin(ang)*speed;
+    p.life = 18 + Math.random()*18;
+    particles.push(p);
+  }
+}
 function makeParticle(x,y,color,size){
   return { x,y, vx:(Math.random()-0.5)*6, vy:(Math.random()-0.5)*6, life:24+Math.random()*12, size, color };
 }
@@ -528,11 +756,18 @@ function updateWeather(dt){
     for(let i=0;i<4*dt;i++) weatherParticles.push({x:Math.random()*w, y:Math.random()*h, vx:-3-Math.random()*2, vy:Math.random()-0.5, type:'sand', life:200});
   } else if(weather==='wind'){
     for(let i=0;i<dt;i++) if(Math.random()<0.3) weatherParticles.push({x:Math.random()*w, y:Math.random()*h, vx:-2-Math.random()*2, vy:Math.random()-0.5, type:'leaf', rot:Math.random()*Math.PI, life:200});
+  } else if(weather==='tempest'){
+    for(let i=0;i<3*dt;i++) weatherParticles.push({x:Math.random()*w, y:-20, vx:(Math.random()-0.5)*3, vy:14+Math.random()*4, type:'tempest', life:h});
+    if(Math.random()<0.004*dt){
+      const x=Math.random()*w;
+      weatherParticles.push({x, y:-40, vx:0, vy:18, type:'bolt', life:h});
+    }
   }
-  if((weather==='rain' || weather==='sand') && Math.random()<0.002*dt) lightningFlash=5;
+  if((weather==='rain' || weather==='sand' || weather==='tempest') && Math.random()<0.002*dt) lightningFlash=5;
   for(let i=weatherParticles.length-1;i>=0;i--){
     const p=weatherParticles[i]; p.x+=p.vx*dt; p.y+=p.vy*dt; p.life-=dt;
     if(p.type==='rain') p.vy+=0.1*dt;
+    if(p.type==='bolt') p.vy+=0.4*dt;
     if(p.life<=0 || p.y>h+20 || p.x<-20 || p.x>w+20) weatherParticles.splice(i,1);
   }
   lightningFlash = Math.max(0, lightningFlash - dt);
@@ -554,6 +789,17 @@ function drawWeather(){
       ctx.fillStyle='rgba(200,150,50,0.8)';
       ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(p.rot||0); ctx.fillRect(-3,-1,6,2); ctx.restore();
       p.rot += 0.05*frameDt;
+    } else if(p.type==='tempest'){
+      ctx.strokeStyle='rgba(180,150,255,0.5)';
+      ctx.lineWidth=2;
+      ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(p.x+p.vx*2, p.y+p.vy*2); ctx.stroke();
+    } else if(p.type==='bolt'){
+      ctx.strokeStyle='rgba(255,220,255,0.85)';
+      ctx.lineWidth=3;
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.lineTo(p.x + (Math.random()-0.5)*30, p.y + 50);
+      ctx.stroke();
     }
   });
   ctx.restore();
@@ -579,6 +825,32 @@ function dropCollectable(x,y){
   }
 }
 
+function summonBossSigils(boss){
+  bossSigils = [];
+  const count = boss.phase>=3 ? 4 : 3;
+  for(let i=0;i<count;i++) bossSigils.push(new BossSigil(boss, (Math.PI*2*i)/count));
+  boss.shieldActive = true;
+  cameraShake = Math.max(cameraShake, 6);
+}
+
+function spawnBossLaser(orientation,pos){
+  const w=window.innerWidth, h=window.innerHeight;
+  const placement = typeof pos==='number' ? pos : (orientation==='horizontal' ? (h*0.2 + Math.random()*h*0.6) : (w*0.2 + Math.random()*w*0.6));
+  bossHazards.push(new BossLaser(orientation, placement));
+}
+
+function spawnBossMinions(boss,count){
+  for(let i=0;i<count;i++){
+    const minion=new Enemy();
+    minion.x = boss.x - 80 - Math.random()*120;
+    minion.y = boss.y + boss.height/2 + (Math.random()*160 - 80);
+    minion.baseY = minion.y;
+    minion.hp = 2 + Math.floor(Math.random()*2);
+    minion.baseSpeed = 3 + Math.random()*1.5;
+    enemies.push(minion);
+  }
+}
+
 function spawnBoss(){
   boss = new Boss(Math.floor(Math.random()*enemiesSprites.length));
   weather = 'rain';
@@ -586,6 +858,8 @@ function spawnBoss(){
   weatherParticles = [];
   lightningFlash = 8;
   killCount = 0;
+  bossSigils = [];
+  bossHazards = [];
 }
 
 /* ========= Backgrounds ========= */
@@ -608,6 +882,8 @@ function resetGame(){
   particles = [];
   weatherParticles = [];
   bossProjectiles = [];
+  bossSigils = [];
+  bossHazards = [];
   enemySpawnTimer = 0;
   cameraShake = 0;
   bgHue = 0; bgHueTimer = 0;
@@ -669,13 +945,47 @@ function update(dt){
   }
 
   if(boss){
+    boss.shieldActive = bossSigils.length>0;
     boss.update(dt);
+    for (let si=bossSigils.length-1; si>=0; si--){
+      const sig=bossSigils[si];
+      if (!boss){ bossSigils=[]; break; }
+      sig.update(dt);
+    }
     if (player.x < boss.x+boss.width && player.x+player.width > boss.x && player.y < boss.y+boss.height && player.y+player.height > boss.y){
       player.takeDamage();
     }
     for (let pi=projectiles.length-1; pi>=0; pi--){
       const p=projectiles[pi];
+      let consumed=false;
+      for (let si=bossSigils.length-1; si>=0; si--){
+        const sig=bossSigils[si];
+        const dist=Math.hypot((p.x||0) - sig.x, (p.y||0) - sig.y);
+        if (dist < sig.size/2 + 6){
+          const dmg = (weaponStats[p.type]?.damage) || 1;
+          const destroyed = sig.takeDamage(dmg);
+          projectiles.splice(pi,1);
+          sfxHit.currentTime=0; sfxHit.play();
+          if (destroyed){
+            bossSigils.splice(si,1);
+            if (bossSigils.length===0){
+              boss.shieldActive=false;
+              floatTexts.push(new FloatText(window.innerWidth/2 - 110, 100, 'Shield Shattered!', '#ffe6ff'));
+              cameraShake = Math.max(cameraShake, 12);
+            }
+          }
+          consumed=true;
+          break;
+        }
+      }
+      if (consumed) continue;
       if (p.x < boss.x + boss.width && p.x > boss.x && p.y > boss.y && p.y < boss.y + boss.height){
+        if (bossSigils.length>0){
+          spawnHitParticles(p.x,p.y,'lightning');
+          sfxHit.currentTime=0; sfxHit.play();
+          projectiles.splice(pi,1);
+          continue;
+        }
         boss.hp -= weaponStats[p.type].damage;
         spawnHitParticles(p.x,p.y,'default');
         projectiles.splice(pi,1);
@@ -683,8 +993,10 @@ function update(dt){
           const bx=boss.x+boss.width/2, by=boss.y+boss.height/2;
           spawnExplosion(bx, by);
           spawnBlood(bx, by);
+          spawnShockwave(bx, by);
           player.bonusShots++;
-          boss=null; bossSpawnTimer = 60*60 + Math.random()*60*60; setWeather(); weatherParticles=[]; cameraShake=20;
+          boss=null; bossSigils=[]; bossHazards=[];
+          bossSpawnTimer = 60*60 + Math.random()*60*60; setWeather(); weatherParticles=[]; cameraShake=20;
           break;
         }
       }
@@ -701,6 +1013,12 @@ function update(dt){
       player.takeDamage(); bossProjectiles.splice(bi,1); continue;
     }
     if (b.x < -50 || b.x > window.innerWidth+50 || b.y < -50 || b.y > window.innerHeight+50) bossProjectiles.splice(bi,1);
+  }
+
+  for (let hi=bossHazards.length-1; hi>=0; hi--){
+    const h=bossHazards[hi]; h.update(dt);
+    if (h.hitPlayer(player)) player.takeDamage();
+    if (h.done) bossHazards.splice(hi,1);
   }
 
   for (let ci=collectables.length-1; ci>=0; ci--){
@@ -727,6 +1045,8 @@ function draw(){
   effects.forEach(e=>e.draw());
   enemies.forEach(e=>e.draw());
   if(boss) boss.draw();
+  bossSigils.forEach(s=>s.draw());
+  bossHazards.forEach(h=>h.draw());
   bossProjectiles.forEach(b=>b.draw());
   collectables.forEach(c=>c.draw());
   drawParticles(frameDt);
