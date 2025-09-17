@@ -144,14 +144,19 @@ const sfxShoot = new Audio('assets/shoot.wav');
 const sfxHit = new Audio('assets/hit.wav');
 const sfxPickup = new Audio('assets/pickup.wav');
 
+let shootAudioCtx = null;
+let shootBufferPromise = null;
+const shootVariantBuffers = {};
+
 /* ========= Game State ========= */
 let started=false, gameOver=false, cameraShake=0;
 let bgHue=0, bgHueTimer=0;
 let dayHue=0, worldBrightness=1, timeOfDay=0, dayCycle=120*60;
 let weather='clear', weatherTimer=0, weatherParticles=[], lightningFlash=0;
-let player, projectiles, enemies, particles, collectables, effects, floatTexts, enemySpawnTimer, boss, bossProjectiles, bossSigils, bossHazards, bossSpawnTimer, killCount;
+let player, projectiles, enemies, particles, collectables, effects, floatTexts, enemySpawnTimer, boss, bossProjectiles, bossSigils, bossHazards, bossSpawnTimer, killCount, clones, bossDropTimer;
 bossSigils = [];
 bossHazards = [];
+clones = [];
 let lastTime = 0, frameDt = 1;
 
 
@@ -236,13 +241,125 @@ const collectableVisuals = {
   fury: { sprite: orbSprite, hue: hueMap.fury, glow: 'rgba(255,180,90,0.55)' },
   focus: { sprite: orbSprite, hue: hueMap.focus, glow: 'rgba(150,255,180,0.55)' },
   overdrive: { sprite: orbSprite, hue: 260, glow: 'rgba(200,170,255,0.55)' },
-  bomb: { sprite: orbSprite, hue: hueMap.bomb, glow: 'rgba(255,140,220,0.6)' }
+  bomb: { sprite: orbSprite, hue: hueMap.bomb, glow: 'rgba(255,140,220,0.6)' },
+  mirror: { sprite: orbSprite, hue: 200, glow: 'rgba(150,150,255,0.55)' },
+  shadows: { sprite: orbSprite, hue: 260, glow: 'rgba(210,120,255,0.6)' }
 };
+
+const shootSoundProfiles = {
+  default: { playbackRate: 1.0, volume: 0.65, filter: { type: 'peaking', frequency: 1100, gain: 3 } },
+  fire: { playbackRate: 0.92, volume: 0.72, filter: { type: 'lowshelf', frequency: 650, gain: 8 } },
+  lightning: { playbackRate: 1.35, volume: 0.62, filter: { type: 'bandpass', frequency: 1600, q: 3.4 } },
+  ice: { playbackRate: 1.12, volume: 0.58, filter: { type: 'highshelf', frequency: 2000, gain: 6 } },
+  bomb: { playbackRate: 0.7, volume: 0.82, filter: { type: 'lowshelf', frequency: 320, gain: 9 } },
+  missile: { playbackRate: 0.82, volume: 0.7, reverse: true, filter: { type: 'bandpass', frequency: 900, q: 4 } },
+  bounce: { playbackRate: 0.88, volume: 0.68, filter: { type: 'notch', frequency: 780, q: 5 } },
+  clone: { playbackRate: 1.05, volume: 0.46, filter: { type: 'highshelf', frequency: 2200, gain: 4 } }
+};
+
+function getShootAudioContext(){
+  if (!shootAudioCtx){
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (Ctx){
+      shootAudioCtx = new Ctx();
+    }
+  }
+  if (shootAudioCtx && shootAudioCtx.state==='suspended'){
+    shootAudioCtx.resume().catch(()=>{});
+  }
+  return shootAudioCtx;
+}
+
+function decodeShootBuffer(ctx, arrayBuffer){
+  return new Promise((resolve, reject)=>{
+    if (!ctx || !arrayBuffer) return reject('no audio context');
+    ctx.decodeAudioData(arrayBuffer.slice(0), resolve, reject);
+  });
+}
+
+function loadShootBuffer(){
+  if (!shootBufferPromise){
+    const ctx = getShootAudioContext();
+    if (!ctx) return null;
+    shootBufferPromise = fetch('assets/shoot.wav')
+      .then(res=>res.arrayBuffer())
+      .then(buf=>decodeShootBuffer(ctx, buf))
+      .catch(err=>{ console.warn('Shoot sample failed', err); shootBufferPromise=null; return null; });
+  }
+  return shootBufferPromise;
+}
+
+function getVariantBuffer(ctx, baseBuffer, key){
+  if (!baseBuffer) return null;
+  const profile = shootSoundProfiles[key] || shootSoundProfiles.default;
+  if (!profile || !profile.reverse) return baseBuffer;
+  const cacheKey = `${key}-rev`;
+  if (!shootVariantBuffers[cacheKey]){
+    const rev = ctx.createBuffer(baseBuffer.numberOfChannels, baseBuffer.length, baseBuffer.sampleRate);
+    for (let ch=0; ch<baseBuffer.numberOfChannels; ch++){
+      const src = baseBuffer.getChannelData(ch);
+      const dst = rev.getChannelData(ch);
+      for (let i=0, j=src.length-1; i<src.length; i++, j--){
+        dst[i] = src[j];
+      }
+    }
+    shootVariantBuffers[cacheKey] = rev;
+  }
+  return shootVariantBuffers[cacheKey];
+}
+
+function playShootSound(type='default', opts={}){
+  const profile = shootSoundProfiles[type] || shootSoundProfiles.default;
+  const ctx = getShootAudioContext();
+  if (!ctx){
+    sfxShoot.currentTime = 0;
+    sfxShoot.playbackRate = profile?.playbackRate || 1;
+    sfxShoot.volume = opts.volume ?? profile?.volume ?? 0.65;
+    sfxShoot.play().catch(()=>{});
+    return;
+  }
+  const bufferPromise = loadShootBuffer();
+  if (!bufferPromise){
+    sfxShoot.currentTime = 0;
+    sfxShoot.playbackRate = profile?.playbackRate || 1;
+    sfxShoot.volume = opts.volume ?? profile?.volume ?? 0.65;
+    sfxShoot.play().catch(()=>{});
+    return;
+  }
+  bufferPromise.then(buffer=>{
+    if (!buffer) return;
+    const source = ctx.createBufferSource();
+    source.buffer = getVariantBuffer(ctx, buffer, type) || buffer;
+    source.playbackRate.value = profile?.playbackRate || 1;
+    const gainNode = ctx.createGain();
+    gainNode.gain.value = opts.volume ?? profile?.volume ?? 0.65;
+    let lastNode = source;
+    if (profile?.filter){
+      const filter = ctx.createBiquadFilter();
+      filter.type = profile.filter.type || 'lowpass';
+      filter.frequency.value = profile.filter.frequency || 1200;
+      if (profile.filter.q) filter.Q.value = profile.filter.q;
+      if (profile.filter.gain !== undefined) filter.gain.value = profile.filter.gain;
+      lastNode.connect(filter);
+      lastNode = filter;
+    }
+    lastNode.connect(gainNode);
+    gainNode.connect(ctx.destination);
+    source.start(0);
+  }).catch(()=>{
+    sfxShoot.currentTime = 0;
+    sfxShoot.playbackRate = profile?.playbackRate || 1;
+    sfxShoot.volume = opts.volume ?? profile?.volume ?? 0.65;
+    sfxShoot.play().catch(()=>{});
+  });
+}
 
 /* ========= Start / Music ========= */
 function startGame(){
   if (!started) { started=true; fadeInMusic(); resetGame(); }
   else if (gameOver) { resetGame(); }
+  getShootAudioContext();
+  loadShootBuffer();
 }
 function fadeInMusic(){
   song.currentTime=0;
@@ -309,9 +426,11 @@ class Player{
     this.powerUps=[];
     this.cooldownTimer=0;
     this.cachedProfile=null;
-    this.bombs=1;
+    this.bombs=2;
+    this.maxBombs=6;
     this.bombCooldown=0;
     this.bombHeld=false;
+    this.bombRegenTimer=220;
   }
   getWeaponProfile(){
     const def = weaponDefinitions[this.weapon] || weaponDefinitions.default;
@@ -378,11 +497,18 @@ class Player{
     if (this.bombs<=0 || this.bombCooldown>0) return;
     const profile = this.cachedProfile || this.getWeaponProfile();
     this.bombs--;
-    this.bombCooldown = 45;
-    effects.push(new ArcaneBomb(this.x+this.width/2, this.y, profile));
-    floatTexts.push(new FloatText(this.x-20, this.y-100, 'Arcane Bomb!', '#ff9cf0'));
-    cameraShake = Math.max(cameraShake, 14);
-    sfxHit.currentTime=0; sfxHit.play();
+    this.bombCooldown = 36;
+    this.bombRegenTimer = 260;
+    const cx = this.x+this.width/2;
+    const cy = this.y;
+    effects.push(new ArcaneBomb(cx, cy, profile));
+    effects.push(new SigilMissile(cx, cy-24, { damage: profile.damage||2, element: profile.element }));
+    effects.push(new SigilMissile(cx, cy+24, { damage: (profile.damage||2)*0.9, element: profile.element, delay: 8 }));
+    spawnBouncingOrbs(cx, cy, 3, profile);
+    floatTexts.push(new FloatText(this.x-30, this.y-110, 'Arcane Salvo!', '#ff9cf0'));
+    cameraShake = Math.max(cameraShake, 16);
+    playShootSound('bomb');
+    playShootSound('missile', { volume: 0.55 });
   }
   update(dt){
     this.updatePowerUps(dt);
@@ -415,15 +541,25 @@ class Player{
     }
     if (this.cooldownTimer>0) this.cooldownTimer -= dt;
     if (this.bombCooldown>0) this.bombCooldown-=dt;
+    if (this.bombs < this.maxBombs){
+      this.bombRegenTimer -= dt;
+      if (this.bombRegenTimer <= 0){
+        this.bombs++;
+        this.bombRegenTimer = 260;
+        floatTexts.push(new FloatText(this.x-20, this.y-120, 'Bomb Recharged', '#ffb0ff'));
+      }
+    } else {
+      this.bombRegenTimer = 220;
+    }
 
     const bombPressed = keys[' '] || keys['e'];
     if (bombPressed && !this.bombHeld){ this.tryBomb(); this.bombHeld=true; }
     if (!bombPressed) this.bombHeld=false;
   }
   shoot(profile){
-    sfxShoot.currentTime=0; sfxShoot.play();
     const angle = Math.atan2(mouse.y - this.y, mouse.x - this.x);
     const shots = Math.max(1, profile.shots || 1);
+    playShootSound(profile.element || 'default');
     if (this.weapon==='lightning'){
       for(let i=0;i<shots;i++){
         const spread = (i-(shots-1)/2)*(profile.spread || 0.08);
@@ -440,6 +576,7 @@ class Player{
         }));
       }
     }
+    clones.forEach(clone=>clone.shoot(profile, angle));
     for (let i=0;i<8;i++) particles.push(makeParticle(this.x+this.width/2, this.y, profile.color || '255,220,150', 2));
     cameraShake = Math.max(cameraShake,2.2);
   }
@@ -500,31 +637,74 @@ class Player{
       this.slowDuration = stats.slowDuration || 0;
       this.chillFactor = stats.chillFactor || 0.5;
       this.splinter = stats.splinter || 0;
+      this.color = stats.color || '255,255,150';
+      this.trailColor = stats.trailColor || this.color;
+      this.bounces = stats.bounces || 0;
+      this.elasticity = stats.elasticity ?? 0.85;
+      this.bounceOnEnemies = !!stats.bounceOnEnemies;
+      this.bounceAllies = !!stats.bounceAllies;
+      this.maxSpeed = stats.maxSpeed || this.speed;
       this.vx=Math.cos(angle)*this.speed;
       this.vy=Math.sin(angle)*this.speed;
-      this.color = stats.color || '255,255,150';
       this.sourceStats = Object.assign({}, stats);
+      this.lastBounce = 0;
     }
     update(dt){
-      this.x+=this.vx*dt; this.y+=this.vy*dt; this.life-=dt;
-      const trail = makeParticle(this.x, this.y, this.color, 2);
+      this.life-=dt;
+      this.x+=this.vx*dt;
+      this.y+=this.vy*dt;
+      if (this.bounces>0){
+        const minX = this.size;
+        const maxX = window.innerWidth - this.size;
+        const minY = this.size;
+        const maxY = window.innerHeight - this.size;
+        let bounced=false;
+        if (this.x <= minX && this.vx < 0){ this.x = minX; this.vx *= -this.elasticity; bounced=true; }
+        if (this.x >= maxX && this.vx > 0){ this.x = maxX; this.vx *= -this.elasticity; bounced=true; }
+        if (this.y <= minY && this.vy < 0){ this.y = minY; this.vy *= -this.elasticity; bounced=true; }
+        if (this.y >= maxY && this.vy > 0){ this.y = maxY; this.vy *= -this.elasticity; bounced=true; }
+        if (bounced){
+          this.bounces = Math.max(0, this.bounces-1);
+          if (this.lastBounce<=0){
+            playShootSound('bounce', { volume: 0.25 });
+            for (let i=0;i<3;i++){ const p=makeParticle(this.x, this.y, this.trailColor, 2); p.life=12; particles.push(p); }
+          }
+          this.lastBounce = 6;
+        }
+      }
+      if (this.lastBounce>0) this.lastBounce-=dt;
+      const trail = makeParticle(this.x, this.y, this.trailColor, 2);
       trail.vx *= 0.2; trail.vy *= 0.2; trail.life = 20;
       particles.push(trail);
     }
     applyHit(enemy){
       enemy.hp -= this.damage;
+      let remove = false;
       const impact = {
-        remove: (--this.pierce) < 0,
+        remove: false,
         element: this.element,
         aoeRadius: this.aoeRadius,
         damage: this.damage,
         splinter: this.splinter,
         stats: this.sourceStats
       };
-      if (this.element==='fire'){
-        enemy.applyBurn(this.burnDuration, this.burnDps);
-      }
+      if (this.element==='fire') enemy.applyBurn(this.burnDuration, this.burnDps);
       if (this.element==='ice') enemy.applyChill(this.slowDuration, this.chillFactor);
+      if (this.bounceOnEnemies && this.bounces>0){
+        const ex = enemy.x + enemy.width/2;
+        const ey = enemy.y + enemy.height/2;
+        const bounceAngle = Math.atan2(this.y - ey, this.x - ex) + (Math.random()-0.5)*0.6;
+        const speed = Math.max(2, Math.min(this.maxSpeed*1.2, Math.hypot(this.vx, this.vy)*this.elasticity));
+        this.vx = Math.cos(bounceAngle) * speed;
+        this.vy = Math.sin(bounceAngle) * speed;
+        this.bounces = Math.max(0, this.bounces-1);
+        this.life -= 4;
+        playShootSound('bounce', { volume: 0.35 });
+      } else {
+        this.pierce = (this.pierce||0) - 1;
+        remove = this.pierce < 0;
+      }
+      impact.remove = remove;
       this.x += this.vx*0.1;
       this.y += this.vy*0.1;
       return impact;
@@ -536,6 +716,120 @@ class Player{
       ctx.restore();
     }
   }
+
+class MirrorClone{
+  constructor(type, opts={}){
+    this.type = type;
+    this.scale = opts.scale || (type==='swarm'?0.68:0.85);
+    this.alpha = opts.alpha || 0.55;
+    this.offset = opts.offset || 0;
+    this.radius = opts.radius || (type==='swarm'?60:90);
+    this.tether = opts.tether || (type==='swarm'?0.16:0.12);
+    this.lag = opts.lag || (type==='swarm'?12:6);
+    this.life = opts.life || 720;
+    this.spin = opts.spin || 0;
+    this.history = [];
+    this.x = player ? player.x : window.innerWidth/2;
+    this.y = player ? player.y : window.innerHeight/2;
+    this.cooldown = 0;
+    this.flip = false;
+    const baseHp = player ? player.hp : 4;
+    this.maxHp = Math.max(1, Math.floor(baseHp/2));
+    this.hp = this.maxHp;
+  }
+  update(dt){
+    if (!player || gameOver){ this.life = 0; return; }
+    this.life -= dt;
+    this.cooldown = Math.max(0, this.cooldown - dt);
+    let targetX = player.x;
+    let targetY = player.y;
+    let flip = player.flip;
+    if (this.lag>0){
+      this.history.push({ x: player.x, y: player.y, flip: player.flip });
+      if (this.history.length > this.lag){
+        const lagged = this.history.shift();
+        targetX = lagged.x;
+        targetY = lagged.y;
+        flip = lagged.flip;
+      }
+    }
+    this.spin += (this.type==='swarm'?0.015:0.006)*dt;
+    const ang = this.offset + (this.type==='swarm'?this.spin:0);
+    targetX += Math.cos(ang) * this.radius;
+    targetY += Math.sin(ang) * this.radius;
+    this.x += (targetX - this.x) * this.tether * dt;
+    this.y += (targetY - this.y) * this.tether * dt;
+    this.y = Math.max((player.height||32)*this.scale*0.5, Math.min(window.innerHeight - (player.height||32)*this.scale*0.5, this.y));
+    this.flip = flip;
+  }
+  takeDamage(amount=1){
+    this.hp -= amount;
+    if (this.hp<=0) this.life = 0;
+  }
+  getBounds(){
+    const width = (player?.width || 64) * this.scale;
+    const height = (player?.height || 32) * this.scale;
+    return { x: this.x, y: this.y - height/2, width, height };
+  }
+  intersects(rectX, rectY, rectW, rectH){
+    const b = this.getBounds();
+    return b.x < rectX + rectW && b.x + b.width > rectX && b.y < rectY + rectH && b.y + b.height > rectY;
+  }
+  shoot(profile, angle){
+    if (this.life<=0 || this.cooldown>0 || !player) return;
+    const cloneStats = Object.assign({}, profile);
+    cloneStats.damage = (profile.damage||1) * 0.6;
+    cloneStats.speed = (profile.speed||8) * 0.95;
+    cloneStats.cooldown = (profile.cooldown||15) * 0.7;
+    cloneStats.spread = (profile.spread||0.08) * 0.6;
+    cloneStats.shots = Math.max(1, Math.round(profile.shots||1));
+    cloneStats.pierce = Math.max(0, Math.round(profile.pierce||0));
+    cloneStats.color = profile.color || cloneStats.color;
+    if (this.type==='swarm'){
+      cloneStats.bounces = Math.max(cloneStats.bounces||0, 2);
+      cloneStats.bounceOnEnemies = true;
+      cloneStats.bounceAllies = true;
+    }
+    const originX = this.x + (player.width||64)/2;
+    const originY = this.y;
+    if (profile.element==='lightning'){
+      const lightningProfile = Object.assign({}, cloneStats, {
+        damage: (cloneStats.damage||1) * 0.7,
+        chain: Math.max(1, (profile.chain||2)-1),
+        chainFalloff: profile.chainFalloff || 0.7
+      });
+      effects.push(new LightningEffect(originX, originY, angle, lightningProfile));
+      playShootSound('clone', { volume: 0.36 });
+    } else {
+      for (let i=0;i<cloneStats.shots;i++){
+        const spread = (i-(cloneStats.shots-1)/2) * (cloneStats.spread || 0.04);
+        projectiles.push(new Projectile({ x: originX, y: originY, angle: angle+spread, stats: cloneStats }));
+      }
+      playShootSound('clone', { volume: 0.36 });
+    }
+    this.cooldown = cloneStats.cooldown;
+  }
+  draw(){
+    if (this.life<=0 || !player) return;
+    const width = (player.width||64) * this.scale;
+    const height = (player.height||32) * this.scale;
+    ctx.save();
+    ctx.globalAlpha = this.alpha;
+    ctx.translate(this.x, this.y);
+    if (this.flip){ ctx.scale(-1,1); ctx.translate(-width,0); }
+    ctx.filter = 'hue-rotate(200deg) brightness(0.85)';
+    ctx.drawImage(wizardFly, 0, -height/2, width, height);
+    ctx.restore();
+    if (this.hp < this.maxHp){
+      ctx.save();
+      ctx.globalAlpha = 0.7;
+      ctx.fillStyle = 'rgba(140,190,255,0.5)';
+      const barWidth = 38;
+      ctx.fillRect(this.x + width/2 - barWidth/2, this.y - height/2 - 8, barWidth*(this.hp/this.maxHp), 3);
+      ctx.restore();
+    }
+  }
+}
 
   class LightningEffect{
     constructor(x,y,angle,profile){
@@ -642,26 +936,7 @@ class Player{
       spawnShockwave(this.x, this.y);
       spawnHitParticles(this.x, this.y, 'bomb');
       applyAoeDamage(this.x, this.y, 180, (this.profile.damage||2)*1.4, 'bomb');
-      if (boss){
-        if (bossSigils.length>0){
-          let shattered=false;
-          for (let si=bossSigils.length-1; si>=0; si--){
-            const sig=bossSigils[si];
-            if (Math.hypot(sig.x - this.x, sig.y - this.y) <= 240){
-              const destroyed = sig.takeDamage(Math.round((this.profile.damage||2.5)*1.6));
-              if (destroyed){ bossSigils.splice(si,1); shattered=true; }
-            }
-          }
-          if (shattered && bossSigils.length===0){
-            boss.shieldActive=false;
-            floatTexts.push(new FloatText(window.innerWidth/2 - 110, 100, 'Shield Shattered!', '#ffe6ff'));
-          }
-        } else {
-          const bx=boss.x+boss.width/2, by=boss.y+boss.height/2;
-          boss.hp -= (this.profile.damage||2.5)*4.5;
-          spawnHitParticles(bx, by, 'bomb');
-        }
-      }
+      damageBossArea(this.x, this.y, (this.profile.damage||2.5)*4.5, 240, 'bomb');
       cameraShake = Math.max(cameraShake, 18);
     }
     update(dt){
@@ -686,6 +961,112 @@ class Player{
     }
   }
 
+class SigilMissile{
+  constructor(x,y,opts={}){
+    this.x=x; this.y=y;
+    this.vx=0; this.vy=0;
+    this.speed = opts.speed || 3.2;
+    this.maxSpeed = opts.maxSpeed || 7.2;
+    this.accel = opts.accel || 0.14;
+    this.turnRate = opts.turnRate || 0.08;
+    this.life = 420;
+    this.delay = opts.delay || 0;
+    this.element = opts.element || 'bomb';
+    this.damage = opts.damage || 2.6;
+    this.exploded = false;
+    this.radius = 22;
+    this.explodeRadius = opts.explodeRadius || 150;
+  }
+  acquireTarget(){
+    let best=null;
+    if (boss){
+      best = { x: boss.x+boss.width/2, y: boss.y+boss.height/2 };
+    }
+    let minDist = best ? Math.hypot(best.x - this.x, best.y - this.y) : Infinity;
+    for (let i=0;i<enemies.length;i++){
+      const e=enemies[i];
+      const tx = e.x + e.width/2;
+      const ty = e.y + e.height/2;
+      const d = Math.hypot(tx-this.x, ty-this.y);
+      if (d < minDist){ minDist = d; best = { x: tx, y: ty }; }
+    }
+    if (!best && player){
+      best = { x: player.x + player.width/2 + Math.cos(perfNow()*2)*160, y: player.y + Math.sin(perfNow()*2)*60 };
+    }
+    return best;
+  }
+  explode(){
+    if (this.exploded) return;
+    this.exploded = true;
+    this.life = 40;
+    spawnShockwave(this.x, this.y);
+    spawnHitParticles(this.x, this.y, 'bomb');
+    applyAoeDamage(this.x, this.y, this.explodeRadius, this.damage*1.1, this.element);
+    damageBossArea(this.x, this.y, this.damage*2.1, this.explodeRadius+10, this.element);
+    cameraShake = Math.max(cameraShake, 12);
+    playShootSound('missile', { volume: 0.62 });
+  }
+  update(dt){
+    if (this.exploded){
+      this.radius += 10*dt;
+      this.life -= dt;
+      return;
+    }
+    if (this.delay>0){ this.delay -= dt; return; }
+    this.life -= dt;
+    const target = this.acquireTarget();
+    if (target){
+      const desired = Math.atan2(target.y - this.y, target.x - this.x);
+      if (this.vx===0 && this.vy===0){
+        this.vx = Math.cos(desired)*this.speed;
+        this.vy = Math.sin(desired)*this.speed;
+      } else {
+        const current = Math.atan2(this.vy, this.vx);
+        const diff = Math.atan2(Math.sin(desired-current), Math.cos(desired-current));
+        const newAng = current + diff * this.turnRate * dt * 60;
+        const spd = Math.min(this.maxSpeed, Math.hypot(this.vx, this.vy) + this.accel*dt);
+        this.vx = Math.cos(newAng) * spd;
+        this.vy = Math.sin(newAng) * spd;
+      }
+    }
+    this.x += this.vx*dt;
+    this.y += this.vy*dt;
+    const spark = makeParticle(this.x, this.y, '200,150,255', 3);
+    spark.life = 18; spark.vx *= 0.1; spark.vy *= 0.1;
+    particles.push(spark);
+    if (this.life<=0){ this.explode(); return; }
+    for (let i=enemies.length-1;i>=0;i--){
+      const e=enemies[i];
+      if (this.x > e.x-10 && this.x < e.x+e.width+10 && this.y > e.y-10 && this.y < e.y+e.height+10){
+        this.explode();
+        break;
+      }
+    }
+    if (!this.exploded && boss && this.x > boss.x && this.x < boss.x+boss.width && this.y > boss.y && this.y < boss.y+boss.height){
+      this.explode();
+    }
+    if (!this.exploded && (this.x<-60 || this.x>window.innerWidth+60 || this.y<-60 || this.y>window.innerHeight+60)){
+      this.explode();
+    }
+  }
+  draw(){
+    ctx.save();
+    ctx.globalCompositeOperation='lighter';
+    if (!this.exploded){
+      ctx.fillStyle='rgba(180,150,255,0.8)';
+      ctx.beginPath(); ctx.arc(this.x, this.y, 10, 0, Math.PI*2); ctx.fill();
+      ctx.strokeStyle='rgba(255,200,255,0.6)';
+      ctx.lineWidth=2;
+      ctx.beginPath(); ctx.arc(this.x, this.y, 18 + Math.sin(perfNow()*8)*2, 0, Math.PI*2); ctx.stroke();
+    } else {
+      ctx.strokeStyle='rgba(255,210,255,0.4)';
+      ctx.lineWidth=3;
+      ctx.beginPath(); ctx.arc(this.x, this.y, this.radius, 0, Math.PI*2); ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
 class BossProjectile{
   constructor(x,y,tx,ty,opts={}){
     this.x=x; this.y=y;
@@ -697,6 +1078,10 @@ class BossProjectile{
     this.seek=opts.seek || 0;
     this.wobble=opts.wobble || 0;
     this.time=0;
+    this.hp = opts.hp || Math.max(1, Math.ceil(this.size*0.3) + (opts.seek?1:0));
+    this.maxHp = this.hp;
+    this.element = opts.element || 'default';
+    this.flash = 0;
   }
 
   update(dt){
@@ -714,12 +1099,24 @@ class BossProjectile{
       this.vy = Math.sin(ang) * mag;
     }
     this.x+=this.vx*dt; this.y+=this.vy*dt;
+    if (this.flash>0) this.flash-=dt;
+  }
+
+  takeDamage(dmg){
+    this.hp -= dmg;
+    this.flash = 6;
+    return this.hp <= 0;
   }
 
   draw(){
     ctx.save();
     ctx.fillStyle=this.color;
     ctx.beginPath(); ctx.arc(this.x,this.y,this.size,0,Math.PI*2); ctx.fill();
+    if (this.flash>0){
+      ctx.strokeStyle='rgba(255,255,255,0.8)';
+      ctx.lineWidth=2;
+      ctx.beginPath(); ctx.arc(this.x,this.y,this.size+2,0,Math.PI*2); ctx.stroke();
+    }
     ctx.restore();
   }
 }
@@ -1164,6 +1561,37 @@ function spawnShockwave(x,y){
     particles.push(p);
   }
 }
+function resolveBouncyProjectiles(){
+  for (let i=0;i<projectiles.length;i++){
+    const a = projectiles[i];
+    if (!a || !a.bounceAllies) continue;
+    for (let j=i+1;j<projectiles.length;j++){
+      const b = projectiles[j];
+      if (!b || !b.bounceAllies) continue;
+      const dx = a.x - b.x;
+      const dy = a.y - b.y;
+      const minDist = (a.size || 6) + (b.size || 6);
+      const distSq = dx*dx + dy*dy;
+      if (distSq === 0 || distSq > minDist*minDist) continue;
+      const dist = Math.sqrt(distSq);
+      const tmpVx = a.vx, tmpVy = a.vy;
+      a.vx = b.vx; a.vy = b.vy;
+      b.vx = tmpVx; b.vy = tmpVy;
+      a.bounces = Math.max(0, a.bounces-1);
+      b.bounces = Math.max(0, b.bounces-1);
+      const adjust = (minDist - dist) / 2;
+      if (adjust>0){
+        const nx = dx / (dist || 1);
+        const ny = dy / (dist || 1);
+        a.x += nx * adjust;
+        a.y += ny * adjust;
+        b.x -= nx * adjust;
+        b.y -= ny * adjust;
+      }
+      playShootSound('bounce', { volume: 0.2 });
+    }
+  }
+}
 function makeParticle(x,y,color,size){
   return { x,y, vx:(Math.random()-0.5)*6, vy:(Math.random()-0.5)*6, life:24+Math.random()*12, size, color };
 }
@@ -1267,8 +1695,12 @@ function dropCollectable(x,y){
   } else if (roll<0.82){
     const boosts=['rapid','fury','focus'];
     collectables.push(new Collectable(x,y, boosts[Math.floor(Math.random()*boosts.length)]));
-  } else if (roll<0.92){
+  } else if (roll<0.94){
     collectables.push(new Collectable(x,y,'bomb'));
+  } else if (roll<0.97){
+    collectables.push(new Collectable(x,y,'mirror'));
+  } else {
+    collectables.push(new Collectable(x,y,'shadows'));
   }
 }
 
@@ -1303,6 +1735,33 @@ function applyAoeDamage(x,y,radius,damage,element='default',ignore){
   toRemove.sort((a,b)=>b-a).forEach(idx=> defeatEnemy(enemies[idx], idx));
 }
 
+function damageBossArea(x,y,damage,radius,element='default'){
+  if (!boss) return;
+  if (bossSigils.length>0){
+    let shattered=false;
+    for (let si=bossSigils.length-1; si>=0; si--){
+      const sig=bossSigils[si];
+      if (Math.hypot(sig.x - x, sig.y - y) <= radius){
+        const destroyed = sig.takeDamage(Math.round(damage));
+        if (destroyed){ bossSigils.splice(si,1); shattered=true; }
+      }
+    }
+    if (shattered){
+      if (bossSigils.length===0){
+        boss.shieldActive=false;
+        floatTexts.push(new FloatText(window.innerWidth/2 - 110, 100, 'Shield Shattered!', '#ffe6ff'));
+        cameraShake = Math.max(cameraShake, 12);
+      }
+    }
+  } else {
+    const bx=boss.x+boss.width/2, by=boss.y+boss.height/2;
+    if (Math.hypot(bx-x, by-y) <= radius + Math.max(boss.width,boss.height)*0.3){
+      boss.hp -= damage;
+      spawnHitParticles(bx, by, element);
+    }
+  }
+}
+
 function spawnSplinters(x,y,count,stats){
   if (!count || !stats) return;
   const baseAngle = Math.random()*Math.PI*2;
@@ -1319,6 +1778,29 @@ function spawnSplinters(x,y,count,stats){
     });
     projectiles.push(new Projectile({ x, y, angle: ang, stats: shardStats }));
   }
+}
+
+function spawnBouncingOrbs(x,y,count,stats){
+  if (!count || !stats) return;
+  const color = stats.color || '255,200,255';
+  for (let i=0;i<count;i++){
+    const ang = Math.random()*Math.PI*2;
+    const orbStats = Object.assign({}, stats, {
+      damage: Math.max(0.8, (stats.damage||1)*0.9),
+      speed: 6 + Math.random()*1.5,
+      life: Math.max(160, (stats.life||70)+60),
+      pierce: Math.max(1, (stats.pierce||0)),
+      size: Math.max(6, (stats.size||6)+2),
+      color,
+      trailColor: color,
+      bounces: Math.max(3, (stats.bounces||0) + 3),
+      elasticity: 0.9,
+      bounceOnEnemies: true,
+      bounceAllies: true
+    });
+    projectiles.push(new Projectile({ x, y, angle: ang, stats: orbStats }));
+  }
+  playShootSound('bounce', { volume: 0.55 });
 }
 
 function summonBossSigils(boss){
@@ -1356,6 +1838,49 @@ function spawnBoss(){
   killCount = 0;
   bossSigils = [];
   bossHazards = [];
+  bossDropTimer = 240;
+}
+
+function spawnBossDrop(){
+  if (!boss) return;
+  const roll = Math.random();
+  let type;
+  if (roll < 0.25){
+    type = 'heart';
+  } else if (roll < 0.42){
+    type = 'bomb';
+  } else if (roll < 0.68){
+    const arsenal = ['fire','ice','lightning'];
+    type = arsenal[Math.floor(Math.random()*arsenal.length)];
+  } else if (roll < 0.88){
+    const boosts = ['rapid','fury','focus'];
+    type = boosts[Math.floor(Math.random()*boosts.length)];
+  } else {
+    type = Math.random()<0.5 ? 'mirror' : 'shadows';
+  }
+  const minX = 60, maxX = window.innerWidth - 80;
+  const minY = 80, maxY = window.innerHeight - 120;
+  const dropX = Math.max(minX, Math.min(maxX, boss.x + boss.width/2 + (Math.random()-0.5)*240));
+  const dropY = Math.max(minY, Math.min(maxY, boss.y + boss.height + 60 + Math.random()*120));
+  collectables.push(new Collectable(dropX, dropY, type));
+}
+
+function spawnMirrorDecoys(){
+  if (!player) return;
+  clones.push(new MirrorClone('mirror', { offset: -0.5, radius: 90, lag: 6 }));
+  clones.push(new MirrorClone('mirror', { offset: 0.5, radius: 90, lag: 6 }));
+  while (clones.length>6) clones.shift();
+  floatTexts.push(new FloatText(player.x-60, player.y-100, 'Mirror Images!', '#a6c8ff'));
+}
+
+function spawnShadowSwarm(){
+  if (!player) return;
+  const count = 4;
+  for (let i=0;i<count;i++){
+    clones.push(new MirrorClone('swarm', { offset: (Math.PI*2*i)/count, radius: 60, lag: 10, scale:0.65, alpha:0.45 }));
+  }
+  while (clones.length>8) clones.shift();
+  floatTexts.push(new FloatText(player.x-70, player.y-110, 'Shadow Swarm!', '#dcb8ff'));
 }
 
 /* ========= Backgrounds ========= */
@@ -1380,6 +1905,7 @@ function resetGame(){
   bossProjectiles = [];
   bossSigils = [];
   bossHazards = [];
+  clones = [];
   enemySpawnTimer = 0;
   cameraShake = 0;
   bgHue = 0; bgHueTimer = 0;
@@ -1388,6 +1914,7 @@ function resetGame(){
   boss = null; bossSpawnTimer = 60*60 + Math.random()*60*60;
   killCount = 0;
   gameOver = false;
+  bossDropTimer = 0;
 }
 
 function update(dt){
@@ -1404,9 +1931,17 @@ function update(dt){
 
   player.update(dt);
 
+  for (let ci=clones.length-1; ci>=0; ci--){
+    const clone=clones[ci];
+    clone.update(dt);
+    if (clone.life<=0 || clone.hp<=0) clones.splice(ci,1);
+  }
+
   for (let i=projectiles.length-1;i>=0;i--){ const pj=projectiles[i]; pj.update(dt); if (pj.life<=0) projectiles.splice(i,1); }
   for (let i=effects.length-1;i>=0;i--){ const ef=effects[i]; ef.update(dt); if (ef.life<=0) effects.splice(i,1); }
+  resolveBouncyProjectiles();
 
+    outerEnemyLoop:
     for (let ei=enemies.length-1; ei>=0; ei--){
       const e=enemies[ei];
       e.update(dt);
@@ -1415,6 +1950,16 @@ function update(dt){
 
       if (player.x < e.x+e.width && player.x+player.width > e.x && player.y < e.y+e.height && player.y+player.height > e.y){
         player.takeDamage(); enemies.splice(ei,1); continue;
+      }
+
+      for (let ci=clones.length-1; ci>=0; ci--){
+        const clone = clones[ci];
+        if (clone && clone.intersects(e.x, e.y, e.width, e.height)){
+          clone.takeDamage(1);
+          spawnHitParticles(clone.x + (player.width||64)/2, clone.y, 'bomb');
+          enemies.splice(ei,1);
+          continue outerEnemyLoop;
+        }
       }
 
       for (let pi=projectiles.length-1; pi>=0; pi--){
@@ -1439,6 +1984,12 @@ function update(dt){
   if(boss){
     boss.shieldActive = bossSigils.length>0;
     boss.update(dt);
+    bossDropTimer -= dt;
+    if (bossDropTimer<=0){
+      spawnBossDrop();
+      const base = 240 - (boss.phase||1)*18;
+      bossDropTimer = Math.max(160, base) + Math.random()*120;
+    }
     for (let si=bossSigils.length-1; si>=0; si--){
       const sig=bossSigils[si];
       if (!boss){ bossSigils=[]; break; }
@@ -1446,6 +1997,13 @@ function update(dt){
     }
     if (player.x < boss.x+boss.width && player.x+player.width > boss.x && player.y < boss.y+boss.height && player.y+player.height > boss.y){
       player.takeDamage();
+    }
+    for (let ci=clones.length-1; ci>=0; ci--){
+      const clone = clones[ci];
+      if (clone && clone.intersects(boss.x, boss.y, boss.width, boss.height)){
+        clone.takeDamage(2);
+        spawnHitParticles(clone.x + (player.width||64)/2, clone.y, 'bomb');
+      }
     }
       for (let pi=projectiles.length-1; pi>=0; pi--){
         const p=projectiles[pi];
@@ -1499,9 +2057,10 @@ function update(dt){
             spawnBlood(bx, by);
             spawnShockwave(bx, by);
             player.bonusShots++;
-          boss=null; bossSigils=[]; bossHazards=[];
-          bossSpawnTimer = 60*60 + Math.random()*60*60; setWeather(); weatherParticles=[]; cameraShake=20;
-          break;
+            boss=null; bossSigils=[]; bossHazards=[];
+            bossDropTimer = 0;
+            bossSpawnTimer = 60*60 + Math.random()*60*60; setWeather(); weatherParticles=[]; cameraShake=20;
+            break;
         }
       }
     }
@@ -1512,7 +2071,45 @@ function update(dt){
   }
 
   for(let bi=bossProjectiles.length-1; bi>=0; bi--){
-    const b=bossProjectiles[bi]; b.update(dt);
+    const b=bossProjectiles[bi];
+    b.update(dt);
+    let destroyed=false;
+    for (let pi=projectiles.length-1; pi>=0; pi--){
+      const p=projectiles[pi];
+      if (!p) continue;
+      const dist = Math.hypot((p.x||0) - b.x, (p.y||0) - b.y);
+      if (dist < b.size + (p.size || 6)){
+        const dmg = Math.max(0.5, p.damage || p.sourceStats?.damage || 1);
+        if (b.takeDamage(dmg)){
+          spawnHitParticles(b.x, b.y, 'bomb');
+          bossProjectiles.splice(bi,1);
+          destroyed=true;
+        }
+        if (p.bounceOnEnemies && p.bounces>0){
+          p.bounces = Math.max(0, p.bounces-1);
+          p.vx *= -1; p.vy *= -1;
+          p.x += p.vx*0.1; p.y += p.vy*0.1;
+        } else {
+          p.pierce = (p.pierce||0) - 1;
+          if (p.pierce < 0) projectiles.splice(pi,1);
+        }
+        playShootSound('bounce', { volume: 0.28 });
+        spawnHitParticles(b.x, b.y, 'default');
+        break;
+      }
+    }
+    if (destroyed) continue;
+    for (let ci=clones.length-1; ci>=0; ci--){
+      const clone = clones[ci];
+      if (clone && clone.intersects(b.x-b.size, b.y-b.size, b.size*2, b.size*2)){
+        clone.takeDamage(1);
+        spawnHitParticles(clone.x + (player.width||64)/2, clone.y, 'bomb');
+        bossProjectiles.splice(bi,1);
+        destroyed=true;
+        break;
+      }
+    }
+    if (destroyed) continue;
     if (player.x < b.x+b.size && player.x+player.width > b.x && player.y < b.y+b.size && player.y+player.height > b.y){
       player.takeDamage(); bossProjectiles.splice(bi,1); continue;
     }
@@ -1522,6 +2119,15 @@ function update(dt){
   for (let hi=bossHazards.length-1; hi>=0; hi--){
     const h=bossHazards[hi]; h.update(dt);
     if (h.hitPlayer(player)) player.takeDamage();
+    for (let ci=clones.length-1; ci>=0; ci--){
+      const clone = clones[ci];
+      if (!clone) continue;
+      const bounds = clone.getBounds();
+      if (h.hitPlayer({ x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height })){
+        clone.takeDamage(2);
+        spawnHitParticles(clone.x + (player.width||64)/2, clone.y, 'bomb');
+      }
+    }
     if (h.done) bossHazards.splice(hi,1);
   }
 
@@ -1531,6 +2137,8 @@ function update(dt){
         if (c.type==='heart'){ if (player.hp<5) player.hp++; }
         else if (weaponDefinitions[c.type]){ player.upgradeWeapon(c.type); bgHueTimer = 140; }
         else if (powerUpDefinitions[c.type]){ player.applyPowerUp(c.type); bgHueTimer = Math.max(bgHueTimer, 90); }
+        else if (c.type==='mirror'){ spawnMirrorDecoys(); }
+        else if (c.type==='shadows'){ spawnShadowSwarm(); }
         else if (c.type==='bomb'){ player.bombs = Math.min(player.bombs+1, 5); floatTexts.push(new FloatText(player.x-20, player.y-80, 'Bomb Ready', '#ffb0ff')); }
         sfxPickup.currentTime=0; sfxPickup.play();
         collectables.splice(ci,1);
@@ -1546,6 +2154,7 @@ function draw(){
   ctx.save(); ctx.translate(sx,sy);
   ctx.clearRect(0,0,window.innerWidth,window.innerHeight);
   bgObjs.forEach(bg=>bg.draw());
+  clones.forEach(c=>c.draw());
   player.draw();
   projectiles.forEach(p=>p.draw());
   effects.forEach(e=>e.draw());
